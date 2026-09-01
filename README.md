@@ -6,8 +6,11 @@ Cada carácter puede guardar diez o más variantes. Al escribir, Trazo mezcla es
 muestras y cambia ligeramente la separación, la altura y la inclinación para que
 el resultado conserve un pulso más natural.
 
-Las hojas también incluyen un espacio de dibujo para apuntes rápidos, esquemas y
-flechas. Tanto el texto como los trazos se guardan automáticamente en el equipo.
+Trazo funciona como un cuaderno de tareas: cada hoja admite cuadros de texto,
+escritura personalizada, dibujos, símbolos e imágenes que se pueden mover,
+redimensionar, girar, ordenar y bloquear. También incluye portadas reutilizables,
+fondos de cuaderno, varias páginas, exportación exacta a PDF y archivos `.trazo`
+para continuar una tarea en otra tablet.
 
 ## Web
 

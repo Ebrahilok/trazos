@@ -7,17 +7,17 @@ const fraunces = Fraunces({ variable: '--font-display', subsets: ['latin'] });
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL ?? 'http://localhost:3000'),
-  title: 'Trazo - crea una letra más humana',
-  description: 'Editor táctil para escribir, dibujar letras y alternar variantes de forma natural.',
+  title: 'Trazo - cuaderno de tareas con tu letra',
+  description: 'Crea tareas con tu letra, dibujos, símbolos, imágenes y portadas; guárdalas y expórtalas a PDF.',
   openGraph: {
-    title: 'Trazo - crea una letra más humana',
-    description: 'Dibuja varias versiones de cada letra y escribe con un ritmo más natural.',
+    title: 'Trazo - cuaderno de tareas con tu letra',
+    description: 'Escribe, dibuja y organiza tareas completas desde tu tablet.',
     images: [{ url: '/og.png', width: 1536, height: 864, alt: 'Trazo, escritura con pulso' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Trazo - crea una letra más humana',
-    description: 'Dibuja varias versiones de cada letra y escribe con un ritmo más natural.',
+    title: 'Trazo - cuaderno de tareas con tu letra',
+    description: 'Escribe, dibuja y organiza tareas completas desde tu tablet.',
     images: ['/og.png'],
   },
 };
