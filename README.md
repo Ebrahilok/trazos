@@ -6,6 +6,9 @@ Cada carácter puede guardar diez o más variantes. Al escribir, Trazo mezcla es
 muestras y cambia ligeramente la separación, la altura y la inclinación para que
 el resultado conserve un pulso más natural.
 
+Las hojas también incluyen un espacio de dibujo para apuntes rápidos, esquemas y
+flechas. Tanto el texto como los trazos se guardan automáticamente en el equipo.
+
 ## Web
 
 ```bash

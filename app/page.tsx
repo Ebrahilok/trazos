@@ -10,6 +10,7 @@ type Point = { x: number; y: number };
 type Stroke = Point[];
 type Variant = Stroke[];
 type GlyphLibrary = Record<string, Variant[]>;
+type SketchStroke = { points: Point[]; color: string; width: number };
 
 const oval = (cx: number, cy: number, rx: number, ry: number, lean = 0): Stroke =>
   Array.from({ length: 29 }, (_, index) => {
@@ -127,6 +128,46 @@ function DrawPad({ strokes, onChange, color }: { strokes: Variant; onChange: (st
   );
 }
 
+function NoteSketch({ strokes, onChange, color, width }: { strokes: SketchStroke[]; onChange: (strokes: SketchStroke[]) => void; color: string; width: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#fffefa';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.setLineDash([2, 10]);
+    context.strokeStyle = '#ded8cd';
+    context.lineWidth = 1;
+    [90, 180, 270].forEach((y) => { context.beginPath(); context.moveTo(0, y); context.lineTo(canvas.width, y); context.stroke(); });
+    context.setLineDash([]);
+    strokes.forEach((stroke) => {
+      if (!stroke.points.length) return;
+      context.beginPath();
+      context.strokeStyle = stroke.color;
+      context.lineWidth = stroke.width;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      stroke.points.forEach((point, index) => index ? context.lineTo(point.x * canvas.width / 100, point.y * canvas.height / 100) : context.moveTo(point.x * canvas.width / 100, point.y * canvas.height / 100));
+      context.stroke();
+    });
+  }, [strokes]);
+
+  const pointFromEvent = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(100, (event.clientX - rect.left) / rect.width * 100)), y: Math.max(0, Math.min(100, (event.clientY - rect.top) / rect.height * 100)) };
+  };
+
+  return <canvas ref={canvasRef} width={1100} height={360} className="note-canvas" aria-label="Área de dibujo de la nota"
+    onPointerDown={(event) => { drawing.current = true; event.currentTarget.setPointerCapture(event.pointerId); onChange([...strokes, { points: [pointFromEvent(event)], color, width }]); }}
+    onPointerMove={(event) => { if (!drawing.current) return; const next = strokes.map((stroke) => ({ ...stroke, points: [...stroke.points] })); next.at(-1)?.points.push(pointFromEvent(event)); onChange(next); }}
+    onPointerUp={(event) => { drawing.current = false; event.currentTarget.releasePointerCapture(event.pointerId); }}
+    onPointerCancel={() => { drawing.current = false; }} />;
+}
+
 export default function Home() {
   const [text, setText] = useState(STARTER_TEXT);
   const [glyphs, setGlyphs] = useState<GlyphLibrary>(STARTER_GLYPHS);
@@ -135,29 +176,33 @@ export default function Home() {
   const [ink, setInk] = useState('#183d38');
   const [fontSize, setFontSize] = useState(35);
   const [humanize, setHumanize] = useState(62);
+  const [sketch, setSketch] = useState<SketchStroke[]>([]);
+  const [penWidth, setPenWidth] = useState(5);
   const [saved, setSaved] = useState(true);
 
   useEffect(() => {
     const stored = window.localStorage.getItem('trazo-project');
     if (!stored) return;
     try {
-      const project = JSON.parse(stored) as { text?: string; glyphs?: GlyphLibrary; ink?: string; fontSize?: number; humanize?: number };
+      const project = JSON.parse(stored) as { text?: string; glyphs?: GlyphLibrary; ink?: string; fontSize?: number; humanize?: number; sketch?: SketchStroke[]; penWidth?: number };
       if (project.text) setText(project.text);
       if (project.glyphs) setGlyphs(project.glyphs);
       if (project.ink) setInk(project.ink);
       if (project.fontSize) setFontSize(project.fontSize);
       if (typeof project.humanize === 'number') setHumanize(project.humanize);
+      if (project.sketch) setSketch(project.sketch);
+      if (project.penWidth) setPenWidth(project.penWidth);
     } catch { /* Keep starter data if local data is invalid. */ }
   }, []);
 
   useEffect(() => {
     setSaved(false);
     const timer = window.setTimeout(() => {
-      window.localStorage.setItem('trazo-project', JSON.stringify({ text, glyphs, ink, fontSize, humanize }));
+      window.localStorage.setItem('trazo-project', JSON.stringify({ text, glyphs, ink, fontSize, humanize, sketch, penWidth }));
       setSaved(true);
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [text, glyphs, ink, fontSize, humanize]);
+  }, [text, glyphs, ink, fontSize, humanize, sketch, penWidth]);
 
   const currentVariants = glyphs[selectedCharacter] ?? [];
   const saveVariant = () => {
@@ -166,7 +211,7 @@ export default function Home() {
     setDraft([]);
   };
   const exportProject = () => {
-    const blob = new Blob([JSON.stringify({ text, glyphs, ink, fontSize, humanize }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ text, glyphs, ink, fontSize, humanize, sketch, penWidth }, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob); link.download = 'mi-fuente-trazo.json'; link.click(); URL.revokeObjectURL(link.href);
   };
@@ -177,7 +222,7 @@ export default function Home() {
         <div className="brand" aria-label="Trazo"><span className="brand-mark"><PenLine /></span><div><strong>Trazo</strong><span>escritura con pulso</span></div></div>
         <div className="document-title"><Input aria-label="Nombre del documento" defaultValue="Mi primer cuaderno" /><span className={saved ? 'saved' : ''}>{saved ? 'Guardado' : 'Guardando…'}</span></div>
         <div className="top-actions">
-          <Button variant="ghost" size="lg" onClick={() => setText('')}><FilePlus2 /> Nuevo</Button>
+          <Button variant="ghost" size="lg" onClick={() => { setText(''); setSketch([]); }}><FilePlus2 /> Nuevo</Button>
           <Button variant="outline" size="lg" onClick={exportProject}><Download /> Fuente</Button>
           <Button size="lg" onClick={() => window.print()}><Printer /> Imprimir</Button>
         </div>
@@ -198,6 +243,10 @@ export default function Home() {
               <textarea className="source-text" aria-label="Texto del documento" value={text} onChange={(event) => setText(event.target.value)} placeholder="Escribe aquí…" />
               <div className="preview-label"><span>Vista con tu letra</span><span>las variantes cambian solas</span></div>
               <HandwrittenText text={text} glyphs={glyphs} color={ink} size={fontSize} humanize={humanize} />
+              <section className="note-drawing">
+                <div className="drawing-heading"><div><span>Dibujo de la nota</span><small>Haz esquemas, flechas o pequeños dibujos</small></div><div className="drawing-tools"><label>Trazo <Slider aria-label="Grosor del dibujo" min={2} max={14} value={[penWidth]} onValueChange={(value) => setPenWidth(value[0])} /></label><Button variant="ghost" size="sm" onClick={() => setSketch((items) => items.slice(0, -1))} disabled={!sketch.length}><Undo2 /> Deshacer</Button><Button variant="ghost" size="sm" onClick={() => setSketch([])} disabled={!sketch.length}><Eraser /> Limpiar</Button></div></div>
+                <NoteSketch strokes={sketch} onChange={setSketch} color={ink} width={penWidth} />
+              </section>
             </article>
           </div>
         </div>
