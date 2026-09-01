@@ -12,6 +12,13 @@ redimensionar, girar, ordenar y bloquear. También incluye portadas reutilizable
 fondos de cuaderno, varias páginas, exportación exacta a PDF y archivos `.trazo`
 para continuar una tarea en otra tablet.
 
+## Descargar para Android
+
+[Descargar Trazo 2.0 APK](apk/Trazo-tablet-v2.0.apk)
+
+Compatible con Android 7 o posterior. La aplicación funciona sin conexión; sólo
+necesita internet cuando se comparte un archivo mediante Drive o WhatsApp.
+
 ## Web
 
 ```bash
