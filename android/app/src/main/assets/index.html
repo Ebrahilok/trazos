@@ -32,13 +32,13 @@
     <main class="workspace">
       <div class="contextbar">
         <div class="history"><button id="undo" title="Deshacer">↶</button><button id="redo" title="Rehacer">↷</button></div>
-        <label>Color <input id="objectColor" type="color" value="#183d38"></label>
+        <button id="colorPickerButton" class="color-picker-button" type="button" aria-haspopup="dialog"><i id="colorSwatch"></i><span>Color</span></button>
         <label>Grosor <input id="brushWidth" type="range" min="1" max="24" value="5"><output id="brushOut">5</output></label>
         <button id="duplicateObject">Duplicar</button><button id="lockObject">Bloquear</button><button id="frontObject">Al frente</button><button id="backObject">Al fondo</button><button class="danger" id="removeObject">Eliminar</button>
         <span class="hint" id="toolHint">Toca un elemento para moverlo, girarlo o cambiar su tamaño.</span>
       </div>
       <div class="page-stage" id="pageStage"><div class="canvas-shell" id="canvasShell"><canvas id="pageCanvas"></canvas></div></div>
-      <footer class="pagebar"><button id="prevPage">‹</button><span id="pageLabel">Página 1 de 1</span><button id="nextPage">›</button><button id="addPage">＋ Nueva página</button><button id="deletePage">Eliminar página</button><button id="zoomOut">−</button><output id="zoomLabel">75%</output><button id="zoomIn">＋</button></footer>
+      <footer class="pagebar"><button id="prevPage">‹</button><span id="pageLabel">Página 1 de 1</span><button id="nextPage">›</button><button id="addPage">＋ Nueva página</button><button id="deletePage">Eliminar página</button><button id="zoomOut">−</button><output id="zoomLabel" title="También puedes ampliar con dos dedos">75%</output><button id="zoomIn">＋</button></footer>
     </main>
 
     <aside class="panel" id="panel">
@@ -53,6 +53,20 @@
       <section data-panel="pages"><small>HOJA</small><h2>Formato de página</h2><label>Orientación<select id="orientation"><option value="portrait">Vertical</option><option value="landscape">Horizontal</option></select></label><label>Fondo<select id="paperStyle"><option value="plain">Blanco</option><option value="ruled">Renglones</option><option value="grid">Cuadrícula</option><option value="margin">Renglones con margen</option></select></label><button class="wide" id="applyPageStyle">Aplicar a todas las páginas</button></section>
       <section data-panel="font"><small>FUENTE PERSONAL</small><h2>Variantes de letra</h2><div class="glyph-row"><label>Carácter<input id="glyphCharacter" maxlength="1" value="a"></label><strong id="glyphCount">0/10</strong></div><canvas id="glyphPad" width="620" height="360"></canvas><div class="button-grid"><button id="glyphUndo">Deshacer</button><button id="glyphClear">Limpiar</button></div><button class="wide primary" id="glyphSave">Guardar variante</button><div class="glyph-progress"><i id="glyphProgress"></i></div><p id="glyphMessage" class="muted"></p><div class="glyph-variants" id="glyphVariants"></div></section>
     </aside>
+  </div>
+  <div class="color-overlay" id="colorOverlay" hidden>
+    <section class="color-picker" role="dialog" aria-modal="true" aria-labelledby="colorTitle">
+      <header><div><small>COLOR DEL TRAZO</small><h2 id="colorTitle">Elige un color</h2></div><button id="closeColorPicker" aria-label="Cerrar selector">×</button></header>
+      <div class="color-preview-row"><span id="colorPreview"></span><label>Código hexadecimal<input id="colorHex" inputmode="text" maxlength="7" value="#183D38"></label><label class="native-color">Selector de Android<input id="objectColor" type="color" value="#183d38"></label></div>
+      <div class="color-presets" id="colorPresets" aria-label="Colores recomendados"></div>
+      <div class="color-sliders">
+        <label>Tono <input id="colorHue" type="range" min="0" max="360" value="169"></label>
+        <label>Saturación <input id="colorSaturation" type="range" min="0" max="100" value="43"></label>
+        <label>Luminosidad <input id="colorLightness" type="range" min="8" max="92" value="17"></label>
+      </div>
+      <div class="recent-colors"><b>Usados recientemente</b><div id="recentColors"></div></div>
+      <button class="primary wide" id="useColor">Usar este color</button>
+    </section>
   </div>
   <div class="toast" id="toast"></div>
   <script src="vendor/fabric.min.js"></script><script src="vendor/jspdf.umd.min.js"></script><script src="app.js"></script>

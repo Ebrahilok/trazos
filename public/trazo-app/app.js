@@ -15,6 +15,15 @@ let saveTimer;
 let glyphDraft = [];
 let glyphDrawing = false;
 let baseBrushWidth = 5;
+let pinchState = null;
+let pinchDiscardUntil = 0;
+const touchPointers = new Map();
+const MIN_ZOOM = .3;
+const MAX_ZOOM = 2.5;
+const COLOR_STORE = 'trazo-recent-colors-v1';
+const presetColors = ['#183D38','#2E6F68','#2F5DA8','#4E3F8F','#7A3E84','#A33D54','#C6533F','#E47A45','#D29B2B','#F1C84B','#5E8C42','#2C8C75','#111827','#4B5563','#8B8178','#FFFFFF'];
+let recentColors = [];
+try { recentColors = JSON.parse(localStorage.getItem(COLOR_STORE) || '[]'); } catch { recentColors = []; }
 
 const starterProject = () => ({
   id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
@@ -37,10 +46,83 @@ canvas.freeDrawingBrush.color = '#183d38';
 canvas.upperCanvasEl.addEventListener('pointerdown', (event) => { if (canvas.isDrawingMode && event.pointerType === 'pen' && event.pressure > 0) canvas.freeDrawingBrush.width = baseBrushWidth * (.55 + event.pressure * 1.15); });
 canvas.upperCanvasEl.addEventListener('pointermove', (event) => { if (canvas.isDrawingMode && event.pointerType === 'pen' && event.pressure > 0) canvas.freeDrawingBrush.width = baseBrushWidth * (.55 + event.pressure * 1.15); });
 
+function touchCenter(points) { return { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }; }
+function touchDistance(points) { return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y); }
+function beginPinch() {
+  const points = [...touchPointers.values()].slice(0, 2); if (points.length < 2) return;
+  const stage = $('#pageStage'), rect = stage.getBoundingClientRect(), center = touchCenter(points);
+  pinchState = { startDistance: Math.max(1, touchDistance(points)), startZoom: zoom, pageX: (stage.scrollLeft + center.x - rect.left) / zoom, pageY: (stage.scrollTop + center.y - rect.top) / zoom, wasDrawing: canvas.isDrawingMode, wasSelection: canvas.selection };
+  canvas.isDrawingMode = false; canvas.selection = false; canvas.skipTargetFind = true; canvas.discardActiveObject(); canvas.requestRenderAll(); stage.classList.add('pinching');
+}
+function finishPinch() {
+  if (!pinchState || touchPointers.size) return;
+  const state = pinchState; pinchState = null; pinchDiscardUntil = performance.now() + 350;
+  canvas.skipTargetFind = false; canvas.selection = state.wasSelection; canvas.isDrawingMode = state.wasDrawing; canvas.freeDrawingBrush.width = baseBrushWidth;
+  $('#pageStage').classList.remove('pinching'); canvas.requestRenderAll();
+}
+const pageStage = $('#pageStage');
+pageStage.addEventListener('pointerdown', (event) => {
+  if (event.pointerType !== 'touch') return; touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (touchPointers.size === 2) { event.preventDefault(); event.stopImmediatePropagation(); beginPinch(); }
+}, { capture: true, passive: false });
+pageStage.addEventListener('pointermove', (event) => {
+  if (event.pointerType !== 'touch' || !touchPointers.has(event.pointerId)) return;
+  touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); if (!pinchState) return;
+  event.preventDefault(); event.stopImmediatePropagation(); const points = [...touchPointers.values()].slice(0, 2); if (points.length < 2) return;
+  const stage = $('#pageStage'), rect = stage.getBoundingClientRect(), center = touchCenter(points);
+  zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchState.startZoom * touchDistance(points) / pinchState.startDistance)); applyZoom();
+  stage.scrollLeft = pinchState.pageX * zoom - (center.x - rect.left); stage.scrollTop = pinchState.pageY * zoom - (center.y - rect.top);
+}, { capture: true, passive: false });
+function releaseTouch(event) {
+  if (event.pointerType !== 'touch') return; const wasPinching = Boolean(pinchState); touchPointers.delete(event.pointerId);
+  if (wasPinching) { event.preventDefault(); finishPinch(); }
+}
+pageStage.addEventListener('pointerup', releaseTouch, { capture: true, passive: false });
+pageStage.addEventListener('pointercancel', releaseTouch, { capture: true, passive: false });
+
 function toast(message) {
   const element = $('#toast'); element.textContent = message; element.classList.add('show');
   clearTimeout(element._timer); element._timer = setTimeout(() => element.classList.remove('show'), 1900);
 }
+
+function normalizeHex(value) {
+  const raw = String(value || '').trim().replace(/^#/, '');
+  if (/^[0-9a-f]{3}$/i.test(raw)) return `#${raw.split('').map((part) => part + part).join('').toUpperCase()}`;
+  return /^[0-9a-f]{6}$/i.test(raw) ? `#${raw.toUpperCase()}` : null;
+}
+function hexToHsl(hex) {
+  const color = normalizeHex(hex) || '#183D38'; const red = parseInt(color.slice(1, 3), 16) / 255, green = parseInt(color.slice(3, 5), 16) / 255, blue = parseInt(color.slice(5, 7), 16) / 255;
+  const max = Math.max(red, green, blue), min = Math.min(red, green, blue); let hue = 0, saturation = 0; const lightness = (max + min) / 2;
+  if (max !== min) { const delta = max - min; saturation = lightness > .5 ? delta / (2 - max - min) : delta / (max + min); if (max === red) hue = (green - blue) / delta + (green < blue ? 6 : 0); else if (max === green) hue = (blue - red) / delta + 2; else hue = (red - green) / delta + 4; hue *= 60; }
+  return { h: Math.round(hue), s: Math.round(saturation * 100), l: Math.round(lightness * 100) };
+}
+function hslToHex(hue, saturation, lightness) {
+  const h = ((Number(hue) % 360) + 360) % 360, s = Number(saturation) / 100, l = Number(lightness) / 100;
+  const chroma = (1 - Math.abs(2 * l - 1)) * s, x = chroma * (1 - Math.abs((h / 60) % 2 - 1)), match = l - chroma / 2; let rgb;
+  if (h < 60) rgb = [chroma, x, 0]; else if (h < 120) rgb = [x, chroma, 0]; else if (h < 180) rgb = [0, chroma, x]; else if (h < 240) rgb = [0, x, chroma]; else if (h < 300) rgb = [x, 0, chroma]; else rgb = [chroma, 0, x];
+  return `#${rgb.map((part) => Math.round((part + match) * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+function syncColorControls(value) {
+  const color = normalizeHex(value); if (!color) return;
+  $('#objectColor').value = color; $('#colorHex').value = color; $('#colorSwatch').style.background = color; $('#colorPreview').style.background = color;
+  const hsl = hexToHsl(color); $('#colorHue').value = hsl.h; $('#colorSaturation').value = hsl.s; $('#colorLightness').value = hsl.l;
+  $$('#colorPresets button,#recentColors button').forEach((button) => button.classList.toggle('selected', button.dataset.color === color));
+}
+function applyObjectColor(value) {
+  const color = normalizeHex(value); if (!color) return false; syncColorControls(color); canvas.freeDrawingBrush.color = color;
+  const object = selected(); if (object && typeof object.fill === 'string') { object.set('fill', color); if (object.stroke) object.set('stroke', color); canvas.requestRenderAll(); scheduleSave(); }
+  drawGlyphPad(); return true;
+}
+function rememberColor(value) {
+  const color = normalizeHex(value); if (!color) return; recentColors = [color, ...recentColors.filter((item) => item !== color)].slice(0, 8); localStorage.setItem(COLOR_STORE, JSON.stringify(recentColors)); renderColorChoices();
+}
+function renderColorChoices() {
+  $('#colorPresets').innerHTML = presetColors.map((color) => `<button type="button" data-color="${color}" style="--swatch:${color}" aria-label="Color ${color}"></button>`).join('');
+  $('#recentColors').innerHTML = recentColors.length ? recentColors.map((color) => `<button type="button" data-color="${color}" style="--swatch:${color}" aria-label="Color reciente ${color}"></button>`).join('') : '<small class="muted">Aquí aparecerán los colores que elijas.</small>';
+  syncColorControls($('#objectColor').value);
+}
+function openColorPicker() { renderColorChoices(); $('#colorOverlay').hidden = false; $('#closeColorPicker').focus(); }
+function closeColorPicker(commit = false) { if (commit) rememberColor($('#objectColor').value); $('#colorOverlay').hidden = true; $('#colorPickerButton').focus(); }
 
 function updateProjectSelect() {
   $('#projectSelect').innerHTML = projects.map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`).join('');
@@ -75,6 +157,7 @@ function setPageDimensions() {
 }
 
 function applyZoom() {
+  zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
   const shell = $('#canvasShell');
   shell.style.width = `${canvas.width * zoom}px`; shell.style.height = `${canvas.height * zoom}px`;
   const container = shell.querySelector('.canvas-container');
@@ -288,9 +371,9 @@ canvas.on('object:added', () => scheduleSave()); canvas.on('object:removed', () 
   const bounds = object.getBoundingRect();
   if (bounds.top + bounds.height > canvas.height + 20) { canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; loadPage(pageIndex).then(() => { object.set({ top: 70, left: Math.max(40, object.left) }); addObject(object, false); toast('El elemento pasó a una página nueva.'); }); } else scheduleSave();
 });
-canvas.on('path:created', (event) => { event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
+canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
 canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection);
-function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') $('#objectColor').value = object.fill; $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; }
+function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') syncColorControls(object.fill); $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; }
 
 $$('.toolrail button').forEach((button) => button.onclick = () => switchTool(button.dataset.tool));
 $('#panelClose').onclick = () => $('#panel').classList.remove('open');
@@ -298,7 +381,14 @@ $('#projectSelect').onchange = (event) => openProject(event.target.value);
 $('#newProject').onclick = () => { const name = prompt('Nombre de la nueva tarea:'); if (name !== null) createProject(name.trim()); };
 $('#duplicateProject').onclick = () => { saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject())); copy.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); copy.name += ' (copia)'; projects.unshift(copy); currentProjectId = copy.id; updateProjectSelect(); loadPage(0); saveAll(); };
 $('#deleteProject').onclick = () => { if (projects.length === 1) return toast('Debe quedar al menos una tarea.'); if (!confirm(`¿Eliminar “${currentProject().name}”?`)) return; projects = projects.filter((project) => project.id !== currentProjectId); currentProjectId = projects[0].id; openProject(currentProjectId); };
-$('#objectColor').oninput = (event) => { canvas.freeDrawingBrush.color = event.target.value; const object = selected(); if (object && typeof object.fill === 'string') { object.set('fill', event.target.value); if (object.stroke) object.set('stroke', event.target.value); canvas.requestRenderAll(); scheduleSave(); } drawGlyphPad(); };
+$('#colorPickerButton').onclick = openColorPicker;
+$('#closeColorPicker').onclick = () => closeColorPicker(false); $('#useColor').onclick = () => closeColorPicker(true);
+$('#colorOverlay').onclick = (event) => { if (event.target === $('#colorOverlay')) closeColorPicker(true); };
+$('#objectColor').oninput = (event) => applyObjectColor(event.target.value); $('#objectColor').onchange = (event) => { applyObjectColor(event.target.value); rememberColor(event.target.value); };
+$('#colorHex').oninput = (event) => { if (normalizeHex(event.target.value)) applyObjectColor(event.target.value); }; $('#colorHex').onchange = (event) => { if (!applyObjectColor(event.target.value)) syncColorControls($('#objectColor').value); };
+['colorHue','colorSaturation','colorLightness'].forEach((id) => { $(`#${id}`).oninput = () => applyObjectColor(hslToHex($('#colorHue').value, $('#colorSaturation').value, $('#colorLightness').value)); $(`#${id}`).onchange = () => rememberColor($('#objectColor').value); });
+function chooseSwatch(event) { const button = event.target.closest('[data-color]'); if (!button) return; applyObjectColor(button.dataset.color); rememberColor(button.dataset.color); }
+$('#colorPresets').onclick = chooseSwatch; $('#recentColors').onclick = chooseSwatch;
 $('#brushWidth').oninput = (event) => { baseBrushWidth = Number(event.target.value); canvas.freeDrawingBrush.width = baseBrushWidth; $('#brushOut').textContent = event.target.value; };
 $('#undo').onclick = () => restoreHistory(historyIndex - 1); $('#redo').onclick = () => restoreHistory(historyIndex + 1);
 $('#removeObject').onclick = () => { const object = selected(); if (object) canvas.remove(object); };
@@ -314,10 +404,10 @@ $('#symbolSearch').oninput = renderSymbols; $('#chooseImage').onclick = () => $(
 $('#makeCover').onclick = applyCover; $('#saveCoverTemplate').onclick = () => { currentProject().coverTemplate = { title: $('#coverTitle').value, student: $('#coverStudent').value, subject: $('#coverSubject').value, teacher: $('#coverTeacher').value, date: $('#coverDate').value, style: $('#coverStyle').value }; scheduleSave(false); toast('Plantilla guardada para esta tarea.'); };
 $('#applyPageStyle').onclick = () => resizePages($('#orientation').value, $('#paperStyle').value);
 $('#prevPage').onclick = () => loadPage(pageIndex - 1); $('#nextPage').onclick = () => loadPage(pageIndex + 1); $('#addPage').onclick = () => addPage(); $('#deletePage').onclick = () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); loadPage(pageIndex); scheduleSave(false); };
-$('#zoomIn').onclick = () => { zoom = Math.min(1.2, zoom + .08); applyZoom(); }; $('#zoomOut').onclick = () => { zoom = Math.max(.35, zoom - .08); applyZoom(); };
+$('#zoomIn').onclick = () => { zoom = Math.min(MAX_ZOOM, zoom + (zoom >= 1 ? .2 : .1)); applyZoom(); }; $('#zoomOut').onclick = () => { zoom = Math.max(MIN_ZOOM, zoom - (zoom > 1 ? .2 : .1)); applyZoom(); };
 $('#exportProject').onclick = exportEditable; $('#importProject').onclick = () => $('#projectFile').click(); $('#projectFile').onchange = (event) => { if (event.target.files[0]) importEditable(event.target.files[0]); event.target.value = ''; }; $('#exportPdf').onclick = () => makePdf(false); $('#sharePdf').onclick = () => makePdf(true);
 const glyphPad = $('#glyphPad'); glyphPad.onpointerdown = (event) => { glyphDrawing = true; glyphPad.setPointerCapture(event.pointerId); glyphDraft.push([glyphPoint(event)]); drawGlyphPad(); }; glyphPad.onpointermove = (event) => { if (glyphDrawing) { glyphDraft.at(-1).push(glyphPoint(event)); drawGlyphPad(); } }; glyphPad.onpointerup = () => glyphDrawing = false; glyphPad.onpointercancel = () => glyphDrawing = false; $('#glyphUndo').onclick = () => { glyphDraft.pop(); drawGlyphPad(); }; $('#glyphClear').onclick = () => { glyphDraft = []; drawGlyphPad(); }; $('#glyphSave').onclick = saveGlyph; $('#glyphCharacter').oninput = updateGlyphStatus; $('#glyphVariants').onclick = (event) => { const button = event.target.closest('[data-delete-variant]'); if (!button) return; const character = $('#glyphCharacter').value.toLowerCase(); currentProject().glyphs[character].splice(Number(button.dataset.deleteVariant), 1); updateGlyphStatus(); scheduleSave(false); toast('Variante eliminada.'); };
-window.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'z') { event.preventDefault(); restoreHistory(event.shiftKey ? historyIndex + 1 : historyIndex - 1); } if ((event.key === 'Delete' || event.key === 'Backspace') && document.activeElement.tagName === 'BODY') { const object = selected(); if (object && !object.locked) canvas.remove(object); } });
+window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#colorOverlay').hidden) closeColorPicker(false); if ((event.ctrlKey || event.metaKey) && event.key === 'z') { event.preventDefault(); restoreHistory(event.shiftKey ? historyIndex + 1 : historyIndex - 1); } if ((event.key === 'Delete' || event.key === 'Backspace') && document.activeElement.tagName === 'BODY') { const object = selected(); if (object && !object.locked) canvas.remove(object); } });
 window.addEventListener('resize', () => { if (window.innerWidth < 600) zoom = .43; else if (window.innerWidth < 900) zoom = .62; applyZoom(); });
 
-$('#coverDate').valueAsDate = new Date(); updateProjectSelect(); renderSymbols(); setPageDimensions(); loadPage(0); drawGlyphPad(); updateGlyphStatus();
+$('#coverDate').valueAsDate = new Date(); updateProjectSelect(); renderSymbols(); renderColorChoices(); setPageDimensions(); loadPage(0); drawGlyphPad(); updateGlyphStatus();

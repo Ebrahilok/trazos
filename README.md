@@ -14,10 +14,15 @@ para continuar una tarea en otra tablet.
 
 ## Descargar para Android
 
-[Descargar Trazo 2.1 APK](apk/Trazo-tablet-v2.1.apk)
+[Descargar Trazo 2.2 APK](apk/Trazo-tablet-v2.2.apk)
 
 Compatible con Android 7 o posterior. La aplicación funciona sin conexión; sólo
 necesita internet cuando se comparte un archivo mediante Drive o WhatsApp.
+
+La hoja admite zoom y desplazamiento con dos dedos hasta 250%, incluso mientras
+está activa la herramienta de dibujo. El selector de color incluye una paleta
+táctil, controles de tono, saturación y luminosidad, código hexadecimal y colores
+recientes.
 
 ## Web
 
