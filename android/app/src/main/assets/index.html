@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Trazo</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header><div class="brand"><b>✎</b><span><strong>Trazo</strong><small>ESCRITURA CON PULSO</small></span></div><div class="saved" id="saved">Guardado</div><button id="clearText">Nuevo</button></header>
+  <main>
+    <section class="editor">
+      <div class="tools"><label>Tamaño <input id="size" type="range" min="24" max="58" value="36"><output id="sizeOut">36</output></label><label>Pulso <input id="pulse" type="range" min="0" max="100" value="62"><output id="pulseOut">62%</output></label><label class="ink">Tinta <input id="ink" type="color" value="#183d38"></label></div>
+      <div class="desk"><article class="paper"><small>DOCUMENTO · 01</small><textarea id="text">Cada palabra guarda un ritmo propio.
+Dibuja diez versiones de una letra y Trazo las mezclará por ti.</textarea><div class="preview-title"><span>VISTA CON TU LETRA</span><span>ESPACIO Y ALTURA VARIABLES</span></div><div id="preview"></div></article></div>
+    </section>
+    <aside>
+      <div class="heading"><div><small>TALLER DE LETRA</small><h1>Dibuja otra versión</h1></div><em>10+ por carácter</em></div>
+      <div class="character"><label>Letra</label><input id="character" maxlength="1" value="a"><strong id="count">0</strong><span>de 10 mínimas</span></div>
+      <div class="progress"><i id="progress"></i></div><p class="progressText" id="progressText"></p>
+      <div class="canvasBox"><span>✎ Usa lápiz o dedo</span><canvas id="pad" width="700" height="420"></canvas></div>
+      <div class="actions"><button id="undo">Deshacer</button><button id="erase">Limpiar</button><button class="primary" id="save">Guardar variante</button></div>
+      <div class="variants"><div><h2 id="variantTitle">Variantes de “a”</h2><small>SE MEZCLAN AUTOMÁTICAMENTE</small></div><div id="grid"></div></div>
+    </aside>
+  </main>
+  <script src="app.js"></script>
+</body></html>
