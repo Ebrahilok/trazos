@@ -14,6 +14,7 @@ let restoring = false;
 let saveTimer;
 let glyphDraft = [];
 let glyphDrawing = false;
+let baseBrushWidth = 5;
 
 const starterProject = () => ({
   id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
@@ -33,6 +34,8 @@ const canvas = new fabric.Canvas('pageCanvas', {
 canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
 canvas.freeDrawingBrush.width = 5;
 canvas.freeDrawingBrush.color = '#183d38';
+canvas.upperCanvasEl.addEventListener('pointerdown', (event) => { if (canvas.isDrawingMode && event.pointerType === 'pen' && event.pressure > 0) canvas.freeDrawingBrush.width = baseBrushWidth * (.55 + event.pressure * 1.15); });
+canvas.upperCanvasEl.addEventListener('pointermove', (event) => { if (canvas.isDrawingMode && event.pointerType === 'pen' && event.pressure > 0) canvas.freeDrawingBrush.width = baseBrushWidth * (.55 + event.pressure * 1.15); });
 
 function toast(message) {
   const element = $('#toast'); element.textContent = message; element.classList.add('show');
@@ -281,7 +284,7 @@ canvas.on('object:added', () => scheduleSave()); canvas.on('object:removed', () 
   const bounds = object.getBoundingRect();
   if (bounds.top + bounds.height > canvas.height + 20) { canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; loadPage(pageIndex).then(() => { object.set({ top: 70, left: Math.max(40, object.left) }); addObject(object, false); toast('El elemento pasó a una página nueva.'); }); } else scheduleSave();
 });
-canvas.on('path:created', (event) => { event.path.set({ trazoType: 'drawing' }); scheduleSave(); });
+canvas.on('path:created', (event) => { event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
 canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection);
 function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') $('#objectColor').value = object.fill; $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; }
 
@@ -292,7 +295,7 @@ $('#newProject').onclick = () => { const name = prompt('Nombre de la nueva tarea
 $('#duplicateProject').onclick = () => { saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject())); copy.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); copy.name += ' (copia)'; projects.unshift(copy); currentProjectId = copy.id; updateProjectSelect(); loadPage(0); saveAll(); };
 $('#deleteProject').onclick = () => { if (projects.length === 1) return toast('Debe quedar al menos una tarea.'); if (!confirm(`¿Eliminar “${currentProject().name}”?`)) return; projects = projects.filter((project) => project.id !== currentProjectId); currentProjectId = projects[0].id; openProject(currentProjectId); };
 $('#objectColor').oninput = (event) => { canvas.freeDrawingBrush.color = event.target.value; const object = selected(); if (object && typeof object.fill === 'string') { object.set('fill', event.target.value); if (object.stroke) object.set('stroke', event.target.value); canvas.requestRenderAll(); scheduleSave(); } drawGlyphPad(); };
-$('#brushWidth').oninput = (event) => { canvas.freeDrawingBrush.width = Number(event.target.value); $('#brushOut').textContent = event.target.value; };
+$('#brushWidth').oninput = (event) => { baseBrushWidth = Number(event.target.value); canvas.freeDrawingBrush.width = baseBrushWidth; $('#brushOut').textContent = event.target.value; };
 $('#undo').onclick = () => restoreHistory(historyIndex - 1); $('#redo').onclick = () => restoreHistory(historyIndex + 1);
 $('#removeObject').onclick = () => { const object = selected(); if (object) canvas.remove(object); };
 $('#duplicateObject').onclick = async () => { const object = selected(); if (!object) return; const clone = await object.clone(extraProps); clone.set({ left: object.left + 24, top: object.top + 24 }); addObject(clone, false); };
