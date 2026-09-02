@@ -8,6 +8,9 @@ let projects = [];
 let currentProjectId = '';
 let pageIndex = 0;
 let zoom = .72;
+let viewRotation = 0;
+let activeTool = 'select';
+let movingOverflowObject = false;
 let history = [];
 let historyIndex = -1;
 let restoring = false;
@@ -159,10 +162,24 @@ function setPageDimensions() {
 function applyZoom() {
   zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
   const shell = $('#canvasShell');
-  shell.style.width = `${canvas.width * zoom}px`; shell.style.height = `${canvas.height * zoom}px`;
+  const sideways = viewRotation === 90 || viewRotation === 270;
+  shell.style.width = `${(sideways ? canvas.height : canvas.width) * zoom}px`; shell.style.height = `${(sideways ? canvas.width : canvas.height) * zoom}px`;
   const container = shell.querySelector('.canvas-container');
-  if (container) { container.style.transform = `scale(${zoom})`; container.style.transformOrigin = 'top left'; }
+  if (container) {
+    const transforms = { 0: `scale(${zoom})`, 90: `translate(${canvas.height * zoom}px,0) rotate(90deg) scale(${zoom})`, 180: `translate(${canvas.width * zoom}px,${canvas.height * zoom}px) rotate(180deg) scale(${zoom})`, 270: `translate(0,${canvas.width * zoom}px) rotate(270deg) scale(${zoom})` };
+    container.style.transform = transforms[viewRotation]; container.style.transformOrigin = 'top left';
+  }
   $('#zoomLabel').textContent = `${Math.round(zoom * 100)}%`;
+}
+
+function syncInteractionMode() {
+  const viewOnly = viewRotation !== 0; canvas.isDrawingMode = !viewOnly && activeTool === 'draw'; canvas.selection = !viewOnly && activeTool !== 'draw'; canvas.skipTargetFind = viewOnly;
+  $('#canvasShell').classList.toggle('view-rotated', viewOnly); $('#rotationLabel').textContent = `${viewRotation}°`;
+}
+
+function rotateView() {
+  viewRotation = (viewRotation + 90) % 360; syncInteractionMode(); applyZoom();
+  if (viewRotation) toast(`Vista girada ${viewRotation}°. Vuelve a 0° para editar.`); else toast('Vista normal. Ya puedes editar.');
 }
 
 function serializePage() { return canvas.toJSON(extraProps); }
@@ -202,8 +219,8 @@ function applyPaper() {
   canvas.backgroundColor = patternFor(currentProject().paperStyle); addMarginGuide(currentProject().paperStyle); canvas.requestRenderAll();
 }
 
-async function loadPage(index) {
-  saveCurrentPage(); pageIndex = Math.max(0, Math.min(index, currentProject().pages.length - 1));
+async function loadPage(index, options = {}) {
+  if (options.saveBefore !== false) saveCurrentPage(); pageIndex = Math.max(0, Math.min(index, currentProject().pages.length - 1));
   setPageDimensions(); restoring = true; canvas.clear();
   const page = currentProject().pages[pageIndex];
   if (page) await canvas.loadFromJSON(page);
@@ -216,22 +233,23 @@ function updatePageLabel() {
 }
 
 async function openProject(id) {
-  saveAll(); currentProjectId = id; pageIndex = 0; updateProjectSelect(); await loadPage(0);
+  saveAll(); currentProjectId = id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); updateGlyphStatus();
 }
 
-function createProject(name) {
+async function createProject(name) {
+  saveAll();
   const project = starterProject(); project.name = name || `Tarea ${projects.length + 1}`;
-  projects.unshift(project); currentProjectId = project.id; updateProjectSelect(); loadPage(0); saveAll();
+  projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus();
 }
 
 function switchTool(tool) {
-  canvas.isDrawingMode = tool === 'draw'; canvas.selection = tool !== 'draw';
+  activeTool = tool; syncInteractionMode();
   $$('.toolrail button').forEach((button) => button.classList.toggle('active', button.dataset.tool === tool));
   $$('.panel section').forEach((section) => section.classList.toggle('active', section.dataset.panel === tool));
   if (tool === 'image') $('#imageFile').click();
   if (window.innerWidth <= 820 && tool !== 'select' && tool !== 'image') $('#panel').classList.add('open');
   const hints = { draw: 'Dibuja con el lápiz o el dedo. La presión modifica el grosor cuando está disponible.', select: 'Toca un elemento para moverlo, girarlo o cambiar su tamaño.' };
-  $('#toolHint').textContent = hints[tool] || 'Configura la herramienta en el panel lateral.';
+  $('#toolHint').textContent = viewRotation ? 'La hoja está girada sólo para verla. Vuelve a 0° para editar.' : (hints[tool] || 'Configura la herramienta en el panel lateral.');
 }
 
 function selected() { return canvas.getActiveObject(); }
@@ -246,8 +264,28 @@ function addObject(object, center = true) {
 function addText(text, handwritten = false) {
   const value = text.trim(); if (!value) return toast('Escribe algo primero.');
   const size = Number($('#textSize').value || 28);
-  const object = new fabric.Textbox(value, { width: Math.min(620, canvas.width - 130), fontSize: size, fill: $('#objectColor').value, fontFamily: handwritten ? 'Segoe Print, Comic Sans MS, cursive' : 'Arial, sans-serif', lineHeight: handwritten ? 1.35 : 1.25, textAlign: $('#textAlign').value, trazoType: handwritten ? 'hand-text' : 'text', editable: true });
-  object.set({ left: (canvas.width - object.width) / 2, top: 120 }); addObject(object, false);
+  const left = pageLeftMargin(), width = canvas.width - left - 55;
+  const object = new fabric.Textbox(value, { width, fontSize: size, fill: $('#objectColor').value, fontFamily: handwritten ? 'Segoe Print, Comic Sans MS, cursive' : 'Arial, sans-serif', lineHeight: handwritten ? paperLineHeight() / size : 1.25, textAlign: $('#textAlign').value, trazoType: handwritten ? 'hand-text' : 'text', editable: true });
+  object.set({ left, top: snapToPaperLine(96) }); addObject(object, false);
+}
+
+function paperLineHeight() { return ['ruled','margin','grid'].includes(currentProject().paperStyle) ? 32 : 46; }
+function pageLeftMargin() { return currentProject().paperStyle === 'margin' ? 94 : 58; }
+function snapToPaperLine(top) { const line = paperLineHeight(); return ['ruled','margin','grid'].includes(currentProject().paperStyle) ? Math.max(32, Math.round(top / line) * line) : Math.max(45, top); }
+function fitObjectInsidePage(object) {
+  const left = pageLeftMargin(), right = 55, bottom = 55; let bounds = object.getBoundingRect();
+  if (bounds.width > canvas.width - left - right) { const ratio = (canvas.width - left - right) / bounds.width; object.scaleX *= ratio; object.scaleY *= ratio; object.setCoords(); bounds = object.getBoundingRect(); }
+  if (bounds.height > canvas.height - 100 - bottom) { const ratio = (canvas.height - 100 - bottom) / bounds.height; object.scaleX *= ratio; object.scaleY *= ratio; object.setCoords(); bounds = object.getBoundingRect(); }
+  object.set({ left: Math.min(Math.max(left, object.left), canvas.width - right - bounds.width), top: snapToPaperLine(Math.min(Math.max(32, object.top), canvas.height - bottom - bounds.height)) }); object.setCoords();
+}
+
+function addAnnotation() {
+  const text = $('#noteInput').value.trim(); if (!text) return toast('Escribe la anotación primero.');
+  const styles = { yellow: ['#FFF0A8','#7A5A00'], blue: ['#DDEEFF','#245D72'], pink: ['#F9DDE2','#8A3B4D'], plain: ['#FFFEFA','#183D38'] }, [fill, ink] = styles[$('#noteStyle').value] || styles.yellow;
+  const width = Math.min(330, canvas.width - pageLeftMargin() - 70); const box = new fabric.Rect({ width, height: 138, rx: 12, ry: 12, fill, stroke: ink, strokeWidth: 1.5, shadow: 'rgba(35,45,42,.12) 0 5px 12px' });
+  const label = new fabric.Textbox(text, { left: 15, top: 14, width: width - 30, fontSize: 21, lineHeight: 1.25, fill: ink, fontFamily: 'Segoe Print, Comic Sans MS, cursive' });
+  box.set('height', Math.max(138, label.height + 28));
+  const note = new fabric.Group([box, label], { left: pageLeftMargin(), top: snapToPaperLine(96), trazoType: 'annotation' }); fitObjectInsidePage(note); addObject(note, false); $('#noteInput').value = '';
 }
 
 const symbolCategories = {
@@ -293,12 +331,12 @@ function applyCover() {
   canvas.getObjects().forEach((object) => canvas.remove(object)); coverObjects(fields, $('#coverStyle').value).forEach((object) => canvas.add(object)); applyPaper(); canvas.requestRenderAll(); scheduleSave(); toast('Portada aplicada.');
 }
 
-function addPage(auto = false) {
-  saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; loadPage(pageIndex); scheduleSave(false); if (auto) toast('Se creó una página nueva automáticamente.');
+async function addPage(auto = false) {
+  saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); if (auto) toast('Se creó una página nueva automáticamente.');
 }
 
 async function resizePages(orientation, style) {
-  saveCurrentPage(); currentProject().orientation = orientation; currentProject().paperStyle = style; await loadPage(pageIndex); scheduleSave(false); toast('Formato aplicado.');
+  saveCurrentPage(); currentProject().orientation = orientation; currentProject().paperStyle = style; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Formato aplicado.');
 }
 
 function projectPayload() { saveCurrentPage(); return { type: 'trazo-project', version: 3, exportedAt: new Date().toISOString(), project: currentProject() }; }
@@ -332,7 +370,7 @@ async function makePdf(share = false) {
 function safeName(name) { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'tarea'; }
 
 async function importEditable(file) {
-  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0); saveAll(); toast('Tarea importada.'); } catch { toast('El archivo .trazo no es válido.'); }
+  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); saveAll(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); toast('Tarea importada.'); } catch { toast('El archivo .trazo no es válido.'); }
 }
 
 function drawGlyphPad() {
@@ -345,31 +383,57 @@ function updateGlyphStatus() { const character = [...$('#glyphCharacter').value.
 
 function saveGlyph() { if (!glyphDraft.some((stroke) => stroke.length > 1)) return toast('Dibuja la letra primero.'); const character = $('#glyphCharacter').value.toLowerCase(); (currentProject().glyphs[character] ||= []).push(glyphDraft); glyphDraft = []; drawGlyphPad(); updateGlyphStatus(); scheduleSave(false); }
 
-function addHumanizedText(value) {
+function makeHumanizedCharacter(character, size, glyphs, amount) {
+  const variants = glyphs[character.toLowerCase()]; let object, advance;
+  if (variants?.length) {
+    const variant = variants[Math.floor(Math.random() * variants.length)]; const points = variant.flat();
+    const minX = Math.min(...points.map((point) => point.x)), maxX = Math.max(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y)), maxY = Math.max(...points.map((point) => point.y));
+    const sourceWidth = Math.max(1, maxX - minX), sourceHeight = Math.max(1, maxY - minY); const variation = .985 + Math.random() * .03; let scale = size * .92 * variation / sourceHeight; scale = Math.min(scale, size * .76 / sourceWidth);
+    const paths = variant.map((stroke) => new fabric.Polyline(stroke.map((point) => ({ x: point.x - minX, y: point.y - minY })), { fill: '', stroke: $('#objectColor').value, strokeWidth: 4.7 / scale, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false }));
+    const renderedWidth = sourceWidth * scale, renderedHeight = sourceHeight * scale;
+    object = new fabric.Group(paths, { left: 0, top: size - renderedHeight, scaleX: scale, scaleY: scale, selectable: false }); advance = Math.max(size * .43, renderedWidth + size * .09);
+  } else {
+    object = new fabric.Text(character, { left: 0, top: 0, fontSize: size, fill: $('#objectColor').value, fontFamily: 'Segoe Print, Comic Sans MS, cursive', selectable: false }); advance = object.width + size * .045;
+  }
+  object.angle = (Math.random() - .5) * 1.25 * amount; object.top += (Math.random() - .5) * 1.5 * amount; return { object, advance };
+}
+
+function nextWritingTop() {
+  const bottoms = canvas.getObjects().filter((object) => object.trazoType !== 'page-guide').map((object) => { const bounds = object.getBoundingRect(); return bounds.top + bounds.height; });
+  return snapToPaperLine(Math.max(64, (bottoms.length ? Math.max(...bottoms) : 54) + paperLineHeight()));
+}
+
+async function addHumanizedText(value) {
   if (!value.trim()) return toast('Escribe algo primero.');
-  const group = []; let x = 0, y = 0; const size = 36, maxWidth = canvas.width - 150; const glyphs = currentProject().glyphs;
-  [...value].forEach((character, index) => {
-    if (character === '\n') { x = 0; y += size * 1.55; return; }
-    if (character === ' ') { x += size * (.35 + Math.random() * .25); return; }
-    if (x > maxWidth) { x = 0; y += size * 1.55; }
-    const variants = glyphs[character.toLowerCase()]; let object;
-    if (variants?.length) {
-      const variant = variants[Math.floor(Math.random() * variants.length)];
-      const points = variant.flat(); const minX = Math.min(...points.map((point) => point.x)), maxX = Math.max(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y)), maxY = Math.max(...points.map((point) => point.y));
-      const sourceWidth = Math.max(1, maxX - minX), sourceHeight = Math.max(1, maxY - minY); const variation = .985 + Math.random() * .03; let scale = size * .92 * variation / sourceHeight; scale = Math.min(scale, size * .76 / sourceWidth);
-      const paths = variant.map((stroke) => new fabric.Polyline(stroke.map((point) => ({ x: point.x - minX, y: point.y - minY })), { fill: '', stroke: $('#objectColor').value, strokeWidth: 4.7 / scale, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false }));
-      const renderedWidth = sourceWidth * scale, renderedHeight = sourceHeight * scale;
-      object = new fabric.Group(paths, { left: x, top: y + size - renderedHeight, scaleX: scale, scaleY: scale, selectable: false }); x += Math.max(size * .43, renderedWidth + size * .09);
-    } else { object = new fabric.Text(character, { left: x, top: y, fontSize: size, fill: $('#objectColor').value, fontFamily: 'Segoe Print, Comic Sans MS, cursive', selectable: false }); x += object.width + size * .045; }
-    const amount = Number($('#humanize').value) / 100; object.angle = (Math.random() - .5) * 1.6 * amount; object.top += (Math.random() - .5) * 2.2 * amount; group.push(object);
+  const lineHeight = paperLineHeight(), size = lineHeight * .76, left = pageLeftMargin(), maxWidth = canvas.width - left - 55, glyphs = currentProject().glyphs, amount = Number($('#humanize').value) / 100;
+  let startTop = nextWritingTop(); if (startTop > canvas.height - lineHeight * 2 - 55) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); startTop = 64; }
+  const pages = [[]]; let page = 0, row = 0, x = 0;
+  const capacity = (pageNumber) => Math.max(1, Math.floor((canvas.height - (pageNumber ? 64 : startTop) - 55) / lineHeight));
+  const newLine = () => { x = 0; row += 1; if (row >= capacity(page)) { page += 1; row = 0; pages[page] = []; } };
+  const tokens = value.replace(/\r/g, '').split(/(\s+)/);
+  tokens.forEach((token) => {
+    if (!token) return;
+    if (/^\s+$/.test(token)) { [...token].forEach((character) => { if (character === '\n') newLine(); else if (x) x += size * (.34 + Math.random() * .10); }); return; }
+    const letters = [...token].map((character) => makeHumanizedCharacter(character, size, glyphs, amount)); const wordWidth = letters.reduce((sum, letter) => sum + letter.advance, 0);
+    if (x && x + wordWidth > maxWidth) newLine();
+    letters.forEach(({ object, advance }) => { if (x && x + advance > maxWidth) newLine(); object.set({ left: x, top: row * lineHeight + object.top }); pages[page].push(object); x += advance; });
   });
-  addObject(new fabric.Group(group, { left: 75, top: 120, trazoType: 'humanized-text' }), false);
+  for (let index = 0; index < pages.length; index += 1) {
+    if (index) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); }
+    if (!pages[index].length) continue;
+    const group = new fabric.Group(pages[index], { left, top: index ? 64 : startTop, trazoType: 'humanized-text' }); canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll(); saveCurrentPage();
+  }
+  scheduleSave(); toast(pages.length > 1 ? `Texto acomodado en ${pages.length} páginas.` : 'Texto alineado a los renglones y al margen.');
 }
 
 canvas.on('object:added', () => scheduleSave()); canvas.on('object:removed', () => scheduleSave()); canvas.on('object:modified', (event) => {
-  const object = event.target; if (!object || object.trazoType === 'page-guide') return scheduleSave();
+  const object = event.target; if (!object || object.trazoType === 'page-guide' || movingOverflowObject) return scheduleSave();
+  const alignable = ['humanized-text','hand-text','text','annotation'].includes(object.trazoType); if (alignable) fitObjectInsidePage(object);
   const bounds = object.getBoundingRect();
-  if (bounds.top + bounds.height > canvas.height + 20) { canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; loadPage(pageIndex).then(() => { object.set({ top: 70, left: Math.max(40, object.left) }); addObject(object, false); toast('El elemento pasó a una página nueva.'); }); } else scheduleSave();
+  if (bounds.top + bounds.height > canvas.height + 20) {
+    movingOverflowObject = true; canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1;
+    loadPage(pageIndex, { saveBefore: false }).then(() => { object.set({ top: 64, left: pageLeftMargin() }); fitObjectInsidePage(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); saveCurrentPage(); toast('El elemento pasó a una sola página nueva.'); }).finally(() => { movingOverflowObject = false; });
+  } else scheduleSave();
 });
 canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
 canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection);
@@ -378,9 +442,9 @@ function syncSelection() { const object = selected(); if (object?.fill && typeof
 $$('.toolrail button').forEach((button) => button.onclick = () => switchTool(button.dataset.tool));
 $('#panelClose').onclick = () => $('#panel').classList.remove('open');
 $('#projectSelect').onchange = (event) => openProject(event.target.value);
-$('#newProject').onclick = () => { const name = prompt('Nombre de la nueva tarea:'); if (name !== null) createProject(name.trim()); };
-$('#duplicateProject').onclick = () => { saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject())); copy.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); copy.name += ' (copia)'; projects.unshift(copy); currentProjectId = copy.id; updateProjectSelect(); loadPage(0); saveAll(); };
-$('#deleteProject').onclick = () => { if (projects.length === 1) return toast('Debe quedar al menos una tarea.'); if (!confirm(`¿Eliminar “${currentProject().name}”?`)) return; projects = projects.filter((project) => project.id !== currentProjectId); currentProjectId = projects[0].id; openProject(currentProjectId); };
+$('#newProject').onclick = async () => { const name = prompt('Nombre de la nueva tarea:'); if (name !== null) await createProject(name.trim()); };
+$('#duplicateProject').onclick = async () => { saveAll(); const copy = JSON.parse(JSON.stringify(currentProject())); copy.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); copy.name += ' (copia)'; projects.unshift(copy); currentProjectId = copy.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); };
+$('#deleteProject').onclick = async () => { if (projects.length === 1) return toast('Debe quedar al menos una tarea.'); if (!confirm(`¿Eliminar “${currentProject().name}”?`)) return; saveAll(); projects = projects.filter((project) => project.id !== currentProjectId); currentProjectId = projects[0].id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); };
 $('#colorPickerButton').onclick = openColorPicker;
 $('#closeColorPicker').onclick = () => closeColorPicker(false); $('#useColor').onclick = () => closeColorPicker(true);
 $('#colorOverlay').onclick = (event) => { if (event.target === $('#colorOverlay')) closeColorPicker(true); };
@@ -397,13 +461,15 @@ $('#lockObject').onclick = () => { const object = selected(); if (!object) retur
 $('#frontObject').onclick = () => { const object = selected(); if (object) { canvas.bringObjectToFront(object); scheduleSave(); } };
 $('#backObject').onclick = () => { const object = selected(); if (object) { canvas.sendObjectToBack(object); addMarginGuide(currentProject().paperStyle); scheduleSave(); } };
 $('#addText').onclick = () => addText($('#textInput').value); $('#addHandText').onclick = () => addHumanizedText($('#handTextInput').value);
+$('#addNote').onclick = addAnnotation;
 $('#pencilMode').onclick = () => switchTool('draw'); $('#eraserMode').onclick = () => { switchTool('select'); toast('Selecciona el dibujo y toca Eliminar.'); }; $('#finishDrawing').onclick = () => switchTool('select');
 $('#symbolTabs').onclick = (event) => { const button = event.target.closest('[data-category]'); if (button) { activeSymbolCategory = button.dataset.category; renderSymbols(); } };
 $('#symbolGrid').onclick = (event) => { const button = event.target.closest('[data-symbol]'); if (button) insertSymbol(button.dataset.symbol); };
 $('#symbolSearch').oninput = renderSymbols; $('#chooseImage').onclick = () => $('#imageFile').click(); $('#imageFile').onchange = (event) => { if (event.target.files[0]) readImage(event.target.files[0]); event.target.value = ''; };
 $('#makeCover').onclick = applyCover; $('#saveCoverTemplate').onclick = () => { currentProject().coverTemplate = { title: $('#coverTitle').value, student: $('#coverStudent').value, subject: $('#coverSubject').value, teacher: $('#coverTeacher').value, date: $('#coverDate').value, style: $('#coverStyle').value }; scheduleSave(false); toast('Plantilla guardada para esta tarea.'); };
 $('#applyPageStyle').onclick = () => resizePages($('#orientation').value, $('#paperStyle').value);
-$('#prevPage').onclick = () => loadPage(pageIndex - 1); $('#nextPage').onclick = () => loadPage(pageIndex + 1); $('#addPage').onclick = () => addPage(); $('#deletePage').onclick = () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); loadPage(pageIndex); scheduleSave(false); };
+$('#rotateView').onclick = rotateView;
+$('#prevPage').onclick = () => loadPage(pageIndex - 1); $('#nextPage').onclick = () => loadPage(pageIndex + 1); $('#addPage').onclick = () => addPage(); $('#deletePage').onclick = async () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); };
 $('#zoomIn').onclick = () => { zoom = Math.min(MAX_ZOOM, zoom + (zoom >= 1 ? .2 : .1)); applyZoom(); }; $('#zoomOut').onclick = () => { zoom = Math.max(MIN_ZOOM, zoom - (zoom > 1 ? .2 : .1)); applyZoom(); };
 $('#exportProject').onclick = exportEditable; $('#importProject').onclick = () => $('#projectFile').click(); $('#projectFile').onchange = (event) => { if (event.target.files[0]) importEditable(event.target.files[0]); event.target.value = ''; }; $('#exportPdf').onclick = () => makePdf(false); $('#sharePdf').onclick = () => makePdf(true);
 const glyphPad = $('#glyphPad'); glyphPad.onpointerdown = (event) => { glyphDrawing = true; glyphPad.setPointerCapture(event.pointerId); glyphDraft.push([glyphPoint(event)]); drawGlyphPad(); }; glyphPad.onpointermove = (event) => { if (glyphDrawing) { glyphDraft.at(-1).push(glyphPoint(event)); drawGlyphPad(); } }; glyphPad.onpointerup = () => glyphDrawing = false; glyphPad.onpointercancel = () => glyphDrawing = false; $('#glyphUndo').onclick = () => { glyphDraft.pop(); drawGlyphPad(); }; $('#glyphClear').onclick = () => { glyphDraft = []; drawGlyphPad(); }; $('#glyphSave').onclick = saveGlyph; $('#glyphCharacter').oninput = updateGlyphStatus; $('#glyphVariants').onclick = (event) => { const button = event.target.closest('[data-delete-variant]'); if (!button) return; const character = $('#glyphCharacter').value.toLowerCase(); currentProject().glyphs[character].splice(Number(button.dataset.deleteVariant), 1); updateGlyphStatus(); scheduleSave(false); toast('Variante eliminada.'); };
