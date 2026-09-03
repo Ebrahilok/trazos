@@ -2,9 +2,13 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const STORE = 'trazo-projects-v3';
+const FONT_STORE = 'trazo-font-library-v1';
+const TEMPLATE_STORE = 'trazo-page-templates-v1';
 const PAGE = { portrait: [816, 1056], landscape: [1056, 816] };
-const extraProps = ['locked', 'trazoType'];
+const extraProps = ['locked', 'trazoType', 'sourceText', 'humanizeAmount', 'originalWidth', 'originalHeight'];
 let projects = [];
+let sharedGlyphs = {};
+let pageTemplates = [];
 let currentProjectId = '';
 let pageIndex = 0;
 let zoom = .72;
@@ -18,6 +22,7 @@ let saveTimer;
 let glyphDraft = [];
 let glyphDrawing = false;
 let baseBrushWidth = 5;
+let brushMode = 'pencil';
 let pinchState = null;
 let pinchDiscardUntil = 0;
 const touchPointers = new Map();
@@ -26,7 +31,10 @@ const MAX_ZOOM = 2.5;
 const COLOR_STORE = 'trazo-recent-colors-v1';
 const presetColors = ['#183D38','#2E6F68','#2F5DA8','#4E3F8F','#7A3E84','#A33D54','#C6533F','#E47A45','#D29B2B','#F1C84B','#5E8C42','#2C8C75','#111827','#4B5563','#8B8178','#FFFFFF'];
 let recentColors = [];
+let storageWarningShown = false;
 try { recentColors = JSON.parse(localStorage.getItem(COLOR_STORE) || '[]'); } catch { recentColors = []; }
+try { sharedGlyphs = JSON.parse(localStorage.getItem(FONT_STORE) || '{}'); } catch { sharedGlyphs = {}; }
+try { pageTemplates = JSON.parse(localStorage.getItem(TEMPLATE_STORE) || '[]'); } catch { pageTemplates = []; }
 
 const starterProject = () => ({
   id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
@@ -36,6 +44,12 @@ const starterProject = () => ({
 
 try { projects = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { projects = []; }
 if (!projects.length) projects = [starterProject()];
+if (!Object.keys(sharedGlyphs).length) {
+  projects.forEach((project) => Object.entries(project.glyphs || {}).forEach(([character, variants]) => {
+    (sharedGlyphs[character] ||= []).push(...variants);
+    sharedGlyphs[character] = sharedGlyphs[character].slice(0, 30);
+  }));
+}
 currentProjectId = projects[0].id;
 const currentProject = () => projects.find((item) => item.id === currentProjectId) || projects[0];
 
@@ -112,7 +126,7 @@ function syncColorControls(value) {
   $$('#colorPresets button,#recentColors button').forEach((button) => button.classList.toggle('selected', button.dataset.color === color));
 }
 function applyObjectColor(value) {
-  const color = normalizeHex(value); if (!color) return false; syncColorControls(color); canvas.freeDrawingBrush.color = color;
+  const color = normalizeHex(value); if (!color) return false; syncColorControls(color); canvas.freeDrawingBrush.color = brushMode === 'highlighter' ? `${color}55` : color;
   const object = selected(); if (object && typeof object.fill === 'string') { object.set('fill', color); if (object.stroke) object.set('stroke', color); canvas.requestRenderAll(); scheduleSave(); }
   drawGlyphPad(); return true;
 }
@@ -133,6 +147,55 @@ function updateProjectSelect() {
 }
 
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character])); }
+
+function templateId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
+function renderTemplateControls() {
+  const covers = pageTemplates.filter((item) => item.type === 'cover');
+  const pages = pageTemplates.filter((item) => item.type === 'page');
+  $('#coverTemplateSelect').innerHTML = '<option value="">Elige una plantilla</option>' + covers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('');
+  $('#pageTemplateSelect').innerHTML = '<option value="">Elige una plantilla</option>' + pages.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('');
+}
+
+function coverFields() {
+  return { title: $('#coverTitle').value, student: $('#coverStudent').value, subject: $('#coverSubject').value, teacher: $('#coverTeacher').value, date: $('#coverDate').value, style: $('#coverStyle').value };
+}
+
+function fillCoverFields(fields) {
+  $('#coverTitle').value = fields.title || ''; $('#coverStudent').value = fields.student || ''; $('#coverSubject').value = fields.subject || ''; $('#coverTeacher').value = fields.teacher || ''; $('#coverDate').value = fields.date || ''; $('#coverStyle').value = fields.style || 'formal';
+}
+
+function saveCoverTemplate() {
+  const name = $('#coverTemplateName').value.trim() || $('#coverTitle').value.trim() || 'Mi portada';
+  const existing = pageTemplates.find((item) => item.type === 'cover' && item.name.toLowerCase() === name.toLowerCase());
+  if (existing) existing.fields = coverFields(); else pageTemplates.push({ id: templateId(), type: 'cover', name, fields: coverFields() });
+  renderTemplateControls(); const saved = pageTemplates.find((item) => item.type === 'cover' && item.name.toLowerCase() === name.toLowerCase()); $('#coverTemplateSelect').value = saved.id; scheduleSave(false); toast('Portada guardada para todas tus tareas.');
+}
+
+function loadCoverTemplate() {
+  const template = pageTemplates.find((item) => item.id === $('#coverTemplateSelect').value && item.type === 'cover');
+  if (!template) return toast('Elige una plantilla primero.'); fillCoverFields(template.fields); $('#coverTemplateName').value = template.name; toast('Plantilla cargada.');
+}
+
+function deleteTemplate(type, selectId) {
+  const id = $(selectId).value; const template = pageTemplates.find((item) => item.id === id && item.type === type);
+  if (!template) return toast('Elige una plantilla primero.');
+  if (!confirm(`¿Eliminar la plantilla “${template.name}”?`)) return;
+  pageTemplates = pageTemplates.filter((item) => item.id !== id); renderTemplateControls(); scheduleSave(false); toast('Plantilla eliminada.');
+}
+
+function savePageTemplate() {
+  const name = $('#pageTemplateName').value.trim() || `Página ${pageTemplates.filter((item) => item.type === 'page').length + 1}`;
+  saveCurrentPage(); const data = { page: JSON.parse(JSON.stringify(currentProject().pages[pageIndex])), orientation: currentProject().orientation, paperStyle: currentProject().paperStyle };
+  const existing = pageTemplates.find((item) => item.type === 'page' && item.name.toLowerCase() === name.toLowerCase());
+  if (existing) existing.data = data; else pageTemplates.push({ id: templateId(), type: 'page', name, data });
+  renderTemplateControls(); const saved = pageTemplates.find((item) => item.type === 'page' && item.name.toLowerCase() === name.toLowerCase()); $('#pageTemplateSelect').value = saved.id; scheduleSave(false); toast('Página guardada como plantilla.');
+}
+
+async function insertPageTemplate() {
+  const template = pageTemplates.find((item) => item.id === $('#pageTemplateSelect').value && item.type === 'page');
+  if (!template) return toast('Elige una plantilla primero.');
+  saveCurrentPage(); currentProject().pages.splice(pageIndex + 1, 0, JSON.parse(JSON.stringify(template.data.page))); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); canvas.getObjects().filter((object) => object.trazoType !== 'page-guide').forEach(fitObjectInsidePage); canvas.requestRenderAll(); scheduleSave(false); toast('Plantilla insertada como página nueva.');
+}
 
 function patternFor(style) {
   if (style === 'plain') return '#fffefa';
@@ -173,7 +236,7 @@ function applyZoom() {
 }
 
 function syncInteractionMode() {
-  const viewOnly = viewRotation !== 0; canvas.isDrawingMode = !viewOnly && activeTool === 'draw'; canvas.selection = !viewOnly && activeTool !== 'draw'; canvas.skipTargetFind = viewOnly;
+  const viewOnly = viewRotation !== 0; canvas.isDrawingMode = !viewOnly && activeTool === 'draw'; canvas.selection = !viewOnly && !['draw','erase'].includes(activeTool); canvas.skipTargetFind = viewOnly || activeTool === 'draw';
   $('#canvasShell').classList.toggle('view-rotated', viewOnly); $('#rotationLabel').textContent = `${viewRotation}°`;
 }
 
@@ -190,9 +253,51 @@ function saveCurrentPage() {
   project.pages[pageIndex] = serializePage(); project.updatedAt = Date.now();
 }
 
+function openBackupDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('trazo-backup-v1', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('snapshots');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveBackup(snapshot) {
+  try {
+    const db = await openBackupDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction('snapshots', 'readwrite');
+      transaction.objectStore('snapshots').put(snapshot, 'latest');
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  } catch { /* Local storage remains the fallback. */ }
+}
+
+async function restoreBackupIfNeeded() {
+  if (localStorage.getItem(STORE)) return;
+  try {
+    const db = await openBackupDb(); const snapshot = await new Promise((resolve, reject) => {
+      const request = db.transaction('snapshots', 'readonly').objectStore('snapshots').get('latest'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    }); db.close();
+    if (!snapshot?.projects?.length) return;
+    projects = snapshot.projects; sharedGlyphs = snapshot.sharedGlyphs || sharedGlyphs; pageTemplates = snapshot.pageTemplates || pageTemplates; currentProjectId = projects[0].id; pageIndex = 0; updateProjectSelect(); renderTemplateControls(); await loadPage(0, { saveBefore: false }); updateGlyphStatus(); toast('Se recuperó la copia automática.');
+  } catch { /* No backup is available. */ }
+}
+
 function saveAll() {
   saveCurrentPage();
-  localStorage.setItem(STORE, JSON.stringify(projects));
+  const snapshot = { projects, sharedGlyphs, pageTemplates, savedAt: Date.now() };
+  try {
+    localStorage.setItem(STORE, JSON.stringify(projects));
+    localStorage.setItem(FONT_STORE, JSON.stringify(sharedGlyphs));
+    localStorage.setItem(TEMPLATE_STORE, JSON.stringify(pageTemplates));
+  } catch {
+    if (!storageWarningShown) toast('La copia local está llena. Guarda un archivo .trazo de respaldo.');
+    storageWarningShown = true;
+  }
+  void saveBackup(snapshot);
   $('#saveState').textContent = 'Guardado';
 }
 
@@ -230,6 +335,7 @@ async function loadPage(index, options = {}) {
 function updatePageLabel() {
   $('#pageLabel').textContent = `Página ${pageIndex + 1} de ${currentProject().pages.length}`;
   $('#prevPage').disabled = pageIndex === 0; $('#nextPage').disabled = pageIndex === currentProject().pages.length - 1;
+  $('#movePageLeft').disabled = pageIndex === 0; $('#movePageRight').disabled = pageIndex === currentProject().pages.length - 1;
 }
 
 async function openProject(id) {
@@ -252,6 +358,12 @@ function switchTool(tool) {
   $('#toolHint').textContent = viewRotation ? 'La hoja está girada sólo para verla. Vuelve a 0° para editar.' : (hints[tool] || 'Configura la herramienta en el panel lateral.');
 }
 
+function setDrawingMode(mode) {
+  brushMode = mode; baseBrushWidth = mode === 'highlighter' ? Math.max(14, Number($('#brushWidth').value)) : Number($('#brushWidth').value);
+  canvas.freeDrawingBrush.width = baseBrushWidth; canvas.freeDrawingBrush.color = mode === 'highlighter' ? `${normalizeHex($('#objectColor').value)}55` : $('#objectColor').value;
+  $('#pencilMode').classList.toggle('active', mode === 'pencil'); $('#highlighterMode').classList.toggle('active', mode === 'highlighter'); $('#eraserMode').classList.remove('active'); switchTool('draw');
+}
+
 function selected() { return canvas.getActiveObject(); }
 function unlockState(object, locked) {
   object.set({ locked, lockMovementX: locked, lockMovementY: locked, lockScalingX: locked, lockScalingY: locked, lockRotation: locked, hasControls: !locked });
@@ -261,12 +373,23 @@ function addObject(object, center = true) {
   if (center) canvas.centerObject(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); scheduleSave();
 }
 
-function addText(text, handwritten = false) {
+async function addText(text, handwritten = false) {
   const value = text.trim(); if (!value) return toast('Escribe algo primero.');
   const size = Number($('#textSize').value || 28);
-  const left = pageLeftMargin(), width = canvas.width - left - 55;
-  const object = new fabric.Textbox(value, { width, fontSize: size, fill: $('#objectColor').value, fontFamily: handwritten ? 'Segoe Print, Comic Sans MS, cursive' : 'Arial, sans-serif', lineHeight: handwritten ? paperLineHeight() / size : 1.25, textAlign: $('#textAlign').value, trazoType: handwritten ? 'hand-text' : 'text', editable: true });
-  object.set({ left, top: snapToPaperLine(96) }); addObject(object, false);
+  const left = pageLeftMargin(), width = canvas.width - left - 55, options = { width, fontSize: size, fill: $('#objectColor').value, fontFamily: handwritten ? 'Segoe Print, Comic Sans MS, cursive' : 'Arial, sans-serif', lineHeight: handwritten ? paperLineHeight() / size : 1.25, textAlign: $('#textAlign').value, trazoType: handwritten ? 'hand-text' : 'text', editable: true };
+  let top = nextWritingTop(); if (top > canvas.height - size * 3 - 55) { await addPage(); top = 64; }
+  const chunks = []; let chunk = ''; let available = canvas.height - top - 55;
+  for (const token of value.split(/(\s+)/)) {
+    const candidate = chunk + token; const probe = new fabric.Textbox(candidate, options);
+    if (chunk && probe.height > available) { chunks.push(chunk.trimEnd()); chunk = token.trimStart(); available = canvas.height - 64 - 55; }
+    else chunk = candidate;
+  }
+  if (chunk.trim()) chunks.push(chunk.trimEnd());
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (index) { await addPage(); top = 64; }
+    const object = new fabric.Textbox(chunks[index], options); object.set({ left, top: snapToPaperLine(top) }); addObject(object, false);
+  }
+  toast(chunks.length > 1 ? `Texto distribuido en ${chunks.length} páginas.` : 'Texto añadido.');
 }
 
 function paperLineHeight() { return ['ruled','margin','grid'].includes(currentProject().paperStyle) ? 32 : 46; }
@@ -296,10 +419,16 @@ const symbolCategories = {
   'Organización': ['✓','✕','!','?','•','◦','①','②','③','④','⑤','☐','☑','⚑','⌂','✎']
 };
 let activeSymbolCategory = 'Formas';
+const symbolKeywords = {
+  '○':'circulo círculo contorno', '●':'circulo círculo punto lleno', '□':'cuadro cuadrado caja', '■':'cuadro cuadrado lleno', '△':'triangulo triángulo', '▲':'triangulo triángulo lleno',
+  '→':'flecha derecha', '←':'flecha izquierda', '↑':'flecha arriba', '↓':'flecha abajo', '↔':'flecha doble horizontal', '↕':'flecha doble vertical',
+  '✓':'palomita correcto verificar', '✕':'equis incorrecto', '☐':'casilla', '☑':'casilla marcada', '⚛':'atomo átomo ciencia', '⚗':'laboratorio ciencia', '∞':'infinito', 'π':'pi matematicas matemáticas'
+};
 function renderSymbols() {
   $('#symbolTabs').innerHTML = Object.keys(symbolCategories).map((category) => `<button class="${category === activeSymbolCategory ? 'active' : ''}" data-category="${category}">${category}</button>`).join('');
-  const query = $('#symbolSearch').value.toLowerCase();
-  const values = symbolCategories[activeSymbolCategory].filter((symbol) => symbol.toLowerCase().includes(query));
+  const query = $('#symbolSearch').value.trim().toLowerCase();
+  const pool = query ? Object.entries(symbolCategories).flatMap(([category, symbols]) => symbols.map((symbol) => ({ symbol, category }))) : symbolCategories[activeSymbolCategory].map((symbol) => ({ symbol, category: activeSymbolCategory }));
+  const values = pool.filter(({ symbol, category }) => !query || `${symbol} ${category} ${symbolKeywords[symbol] || ''}`.toLowerCase().includes(query)).map(({ symbol }) => symbol);
   $('#symbolGrid').innerHTML = values.map((symbol) => `<button data-symbol="${symbol}">${symbol}</button>`).join('');
 }
 
@@ -307,11 +436,33 @@ function insertSymbol(symbol) {
   const object = new fabric.IText(symbol, { fontSize: 74, fill: $('#objectColor').value, fontFamily: 'Arial Unicode MS, Segoe UI Symbol, sans-serif', trazoType: 'symbol' }); addObject(object);
 }
 
+function insertDiagram(type) {
+  const color = $('#objectColor').value; let object;
+  if (type === 'box') object = new fabric.Rect({ width: 260, height: 130, rx: 12, ry: 12, fill: '#fffefa', stroke: color, strokeWidth: 4, trazoType: 'diagram' });
+  else if (type === 'circle') object = new fabric.Ellipse({ rx: 120, ry: 70, fill: '#fffefa', stroke: color, strokeWidth: 4, trazoType: 'diagram' });
+  else if (type === 'line') object = new fabric.Line([0, 0, 260, 0], { stroke: color, strokeWidth: 5, strokeLineCap: 'round', trazoType: 'diagram' });
+  else {
+    const line = new fabric.Line([0, 30, 235, 30], { stroke: color, strokeWidth: 5, strokeLineCap: 'round', selectable: false });
+    const head = new fabric.Triangle({ left: 245, top: 30, width: 27, height: 32, fill: color, angle: 90, originX: 'center', originY: 'center', selectable: false });
+    object = new fabric.Group([line, head], { trazoType: 'diagram' });
+  }
+  addObject(object);
+}
+
 function readImage(file) {
   const reader = new FileReader(); reader.onload = async () => {
     const image = await fabric.FabricImage.fromURL(reader.result);
-    image.scaleToWidth(Math.min(430, canvas.width * .55)); image.set({ trazoType: 'image' }); addObject(image); toast('Imagen añadida.');
+    image.set({ trazoType: 'image', originalWidth: image.width, originalHeight: image.height }); image.scaleToWidth(Math.min(430, canvas.width * .55)); addObject(image); toast('Imagen añadida.');
   }; reader.readAsDataURL(file);
+}
+
+function cropSelectedImage(square) {
+  const image = selected(); if (!image || image.trazoType !== 'image') return toast('Selecciona una imagen primero.');
+  const originalWidth = image.originalWidth || image._element?.naturalWidth || image.width; const originalHeight = image.originalHeight || image._element?.naturalHeight || image.height;
+  image.set({ originalWidth, originalHeight });
+  if (square) { const side = Math.min(originalWidth, originalHeight); image.set({ cropX: (originalWidth - side) / 2, cropY: (originalHeight - side) / 2, width: side, height: side }); }
+  else image.set({ cropX: 0, cropY: 0, width: originalWidth, height: originalHeight });
+  image.setCoords(); canvas.requestRenderAll(); scheduleSave(); toast(square ? 'Recorte cuadrado aplicado.' : 'Imagen restaurada.');
 }
 
 function coverObjects(fields, style) {
@@ -335,12 +486,21 @@ async function addPage(auto = false) {
   saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); if (auto) toast('Se creó una página nueva automáticamente.');
 }
 
+async function duplicatePage() {
+  saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject().pages[pageIndex])); currentProject().pages.splice(pageIndex + 1, 0, copy); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Página duplicada.');
+}
+
+async function movePage(direction) {
+  const target = pageIndex + direction; if (target < 0 || target >= currentProject().pages.length) return;
+  saveCurrentPage(); [currentProject().pages[pageIndex], currentProject().pages[target]] = [currentProject().pages[target], currentProject().pages[pageIndex]]; pageIndex = target; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Página reordenada.');
+}
+
 async function resizePages(orientation, style) {
   saveCurrentPage(); currentProject().orientation = orientation; currentProject().paperStyle = style; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Formato aplicado.');
 }
 
-function projectPayload() { saveCurrentPage(); return { type: 'trazo-project', version: 3, exportedAt: new Date().toISOString(), project: currentProject() }; }
-function blobToBase64(blob) { return new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(blob); }); }
+function projectPayload() { saveCurrentPage(); return { type: 'trazo-project', version: 4, exportedAt: new Date().toISOString(), project: currentProject(), fontLibrary: sharedGlyphs, templates: pageTemplates }; }
+function blobToBase64(blob) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => { if (typeof reader.result !== 'string') return reject(new Error('No se pudo leer el archivo')); resolve(reader.result.split(',')[1]); }; reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); }); }
 
 async function deliverBlob(blob, filename, share = false) {
   if (window.Android?.saveFile) { window.Android.saveFile(await blobToBase64(blob), filename, blob.type || 'application/octet-stream', share); return; }
@@ -354,23 +514,24 @@ async function exportEditable() {
 }
 
 async function makePdf(share = false) {
-  saveCurrentPage(); $('#saveState').textContent = 'Creando PDF…';
-  const project = currentProject(); const original = pageIndex; const orientation = project.orientation === 'landscape' ? 'landscape' : 'portrait';
-  const pdf = new jspdf.jsPDF({ orientation, unit: 'pt', format: 'letter', compress: true });
-  for (let index = 0; index < project.pages.length; index += 1) {
-    await loadPage(index); canvas.discardActiveObject(); canvas.renderAll();
-    if (index) pdf.addPage('letter', orientation);
-    const data = canvas.toDataURL({ format: 'png', multiplier: 1.7 });
-    const width = orientation === 'landscape' ? 792 : 612, height = orientation === 'landscape' ? 612 : 792;
-    pdf.addImage(data, 'PNG', 0, 0, width, height, undefined, 'FAST');
-  }
-  await loadPage(original); const blob = pdf.output('blob'); await deliverBlob(blob, `${safeName(project.name)}.pdf`, share); $('#saveState').textContent = 'Guardado'; toast(share ? 'Elige WhatsApp, Drive u otra aplicación.' : 'PDF guardado.');
+  saveCurrentPage(); const project = currentProject(); const original = pageIndex; const orientation = project.orientation === 'landscape' ? 'landscape' : 'portrait';
+  try {
+    const pdf = new jspdf.jsPDF({ orientation, unit: 'pt', format: 'letter', compress: true }); const multiplier = project.pages.length > 12 ? 1.25 : 1.7;
+    for (let index = 0; index < project.pages.length; index += 1) {
+      $('#saveState').textContent = `PDF ${index + 1}/${project.pages.length}`; await loadPage(index); canvas.discardActiveObject(); canvas.renderAll();
+      if (index) pdf.addPage('letter', orientation);
+      const data = canvas.toDataURL({ format: 'png', multiplier }); const width = orientation === 'landscape' ? 792 : 612, height = orientation === 'landscape' ? 612 : 792;
+      pdf.addImage(data, 'PNG', 0, 0, width, height, undefined, 'FAST'); await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    const blob = pdf.output('blob'); await deliverBlob(blob, `${safeName(project.name)}.pdf`, share); toast(share ? 'Elige WhatsApp, Drive u otra aplicación.' : 'PDF guardado.');
+  } catch { toast('No se pudo crear el PDF. Reduce las imágenes o exporta menos páginas.'); }
+  finally { await loadPage(original); $('#saveState').textContent = 'Guardado'; }
 }
 
 function safeName(name) { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'tarea'; }
 
 async function importEditable(file) {
-  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); saveAll(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); toast('Tarea importada.'); } catch { toast('El archivo .trazo no es válido.'); }
+  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); saveAll(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; Object.entries(payload.fontLibrary || project.glyphs || {}).forEach(([character, variants]) => { (sharedGlyphs[character] ||= []).push(...variants); sharedGlyphs[character] = sharedGlyphs[character].slice(-30); }); (payload.templates || []).forEach((template) => { if (!pageTemplates.some((item) => item.type === template.type && item.name === template.name)) pageTemplates.push({ ...template, id: templateId() }); }); projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); renderTemplateControls(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); toast('Tarea, fuente y plantillas importadas.'); } catch { toast('El archivo .trazo no es válido.'); }
 }
 
 function drawGlyphPad() {
@@ -379,19 +540,44 @@ function drawGlyphPad() {
 
 function glyphPoint(event) { const rect = $('#glyphPad').getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * 100, y: (event.clientY - rect.top) / rect.height * 100 }; }
 function glyphPreview(variant) { const lines = variant.map((stroke) => `<polyline points="${stroke.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ')}" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`).join(''); return `<svg viewBox="0 0 100 100" aria-hidden="true">${lines}</svg>`; }
-function updateGlyphStatus() { const character = [...$('#glyphCharacter').value.toLowerCase()].at(-1) || 'a'; $('#glyphCharacter').value = character; const variants = currentProject().glyphs[character] || []; const count = variants.length; $('#glyphCount').textContent = `${count}/10`; $('#glyphProgress').style.width = `${Math.min(100, count * 10)}%`; $('#glyphMessage').textContent = count >= 10 ? 'Lista para variar con naturalidad.' : `Faltan ${10 - count} muestras recomendadas.`; $('#glyphVariants').innerHTML = variants.map((variant, index) => `<button class="glyph-variant" data-delete-variant="${index}" title="Eliminar variante ${index + 1}"><b>#${index + 1}</b>${glyphPreview(variant)}<i>×</i></button>`).join(''); }
+function glyphCharacter() { return [...$('#glyphCharacter').value].at(-1) || 'a'; }
+function variantStrokes(variant) { return Array.isArray(variant) ? variant : (variant?.strokes || []); }
+function updateGlyphStatus() { const character = glyphCharacter(); $('#glyphCharacter').value = character; const variants = sharedGlyphs[character] || []; const count = variants.length; $('#glyphCount').textContent = `${count}/10`; $('#glyphProgress').style.width = `${Math.min(100, count * 10)}%`; $('#glyphMessage').textContent = count >= 10 ? 'Lista y disponible en todas tus tareas.' : `Faltan ${10 - count} muestras recomendadas.`; $('#glyphVariants').innerHTML = variants.map((variant, index) => `<button class="glyph-variant" data-delete-variant="${index}" title="Eliminar variante ${index + 1}"><b>#${index + 1}</b>${glyphPreview(variantStrokes(variant))}<i>×</i></button>`).join(''); }
 
-function saveGlyph() { if (!glyphDraft.some((stroke) => stroke.length > 1)) return toast('Dibuja la letra primero.'); const character = $('#glyphCharacter').value.toLowerCase(); (currentProject().glyphs[character] ||= []).push(glyphDraft); glyphDraft = []; drawGlyphPad(); updateGlyphStatus(); scheduleSave(false); }
+function saveGlyph() { if (!glyphDraft.some((stroke) => stroke.length > 1)) return toast('Dibuja la letra primero.'); const character = glyphCharacter(); (sharedGlyphs[character] ||= []).push({ strokes: glyphDraft, createdAt: Date.now() }); glyphDraft = []; drawGlyphPad(); updateGlyphStatus(); scheduleSave(false); }
+
+function accentFor(character) {
+  const parts = character.normalize('NFD');
+  if (parts.length < 2) return null;
+  const mark = [...parts].slice(1).find((part) => ['\u0301','\u0300','\u0303','\u0308'].includes(part));
+  return mark ? { base: parts[0], mark } : null;
+}
+
+function makeAccent(mark, width, size, color) {
+  const common = { stroke: color, strokeWidth: Math.max(1.6, size * .075), strokeLineCap: 'round', selectable: false, evented: false };
+  if (mark === '\u0301') return new fabric.Line([width * .43, size * .14, width * .66, 0], common);
+  if (mark === '\u0300') return new fabric.Line([width * .34, 0, width * .57, size * .14], common);
+  if (mark === '\u0308') return new fabric.Group([
+    new fabric.Circle({ left: width * .30, top: size * .04, radius: size * .045, fill: color, selectable: false }),
+    new fabric.Circle({ left: width * .62, top: size * .04, radius: size * .045, fill: color, selectable: false })
+  ], { selectable: false, evented: false });
+  return new fabric.Path(`M ${width * .24} ${size * .10} Q ${width * .40} 0 ${width * .52} ${size * .08} T ${width * .78} ${size * .06}`, { ...common, fill: '' });
+}
 
 function makeHumanizedCharacter(character, size, glyphs, amount) {
-  const variants = glyphs[character.toLowerCase()]; let object, advance;
+  const exactVariants = glyphs[character]; const composedAccent = exactVariants?.length ? null : accentFor(character); const variants = exactVariants || (composedAccent ? glyphs[composedAccent.base] : null); let object, advance;
   if (variants?.length) {
-    const variant = variants[Math.floor(Math.random() * variants.length)]; const points = variant.flat();
+    const variant = variantStrokes(variants[Math.floor(Math.random() * variants.length)]); const points = variant.flat();
     const minX = Math.min(...points.map((point) => point.x)), maxX = Math.max(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y)), maxY = Math.max(...points.map((point) => point.y));
-    const sourceWidth = Math.max(1, maxX - minX), sourceHeight = Math.max(1, maxY - minY); const variation = .985 + Math.random() * .03; let scale = size * .92 * variation / sourceHeight; scale = Math.min(scale, size * .76 / sourceWidth);
+    const sourceWidth = Math.max(1, maxX - minX), sourceHeight = Math.max(1, maxY - minY); const variation = 1 + (Math.random() - .5) * .026 * amount; let scale = size * .86 * variation / sourceHeight; scale = Math.min(scale, size * .74 / sourceWidth);
+    if (/[.,;:·]/.test(character)) scale = Math.min(scale, size * .16 / sourceHeight, size * .18 / sourceWidth);
+    if (/[-–—_]/.test(character)) scale = Math.min(scale, size * .42 / sourceWidth, size * .13 / sourceHeight);
     const paths = variant.map((stroke) => new fabric.Polyline(stroke.map((point) => ({ x: point.x - minX, y: point.y - minY })), { fill: '', stroke: $('#objectColor').value, strokeWidth: 4.7 / scale, strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false }));
     const renderedWidth = sourceWidth * scale, renderedHeight = sourceHeight * scale;
-    object = new fabric.Group(paths, { left: 0, top: size - renderedHeight, scaleX: scale, scaleY: scale, selectable: false }); advance = Math.max(size * .43, renderedWidth + size * .09);
+    const base = new fabric.Group(paths, { left: 0, top: composedAccent ? size * .17 : 0, scaleX: scale, scaleY: scale, selectable: false, evented: false });
+    object = composedAccent ? new fabric.Group([base, makeAccent(composedAccent.mark, renderedWidth, size, $('#objectColor').value)], { left: 0, top: size - renderedHeight - size * .17, selectable: false }) : base;
+    if (!composedAccent) object.set({ left: 0, top: /[.,;:·]/.test(character) ? size * .78 : (/[-–—_]/.test(character) ? size * .48 : size - renderedHeight) });
+    advance = /[.,;:·]/.test(character) ? size * .24 : Math.max(size * .40, renderedWidth + size * .075);
   } else {
     object = new fabric.Text(character, { left: 0, top: 0, fontSize: size, fill: $('#objectColor').value, fontFamily: 'Segoe Print, Comic Sans MS, cursive', selectable: false }); advance = object.width + size * .045;
   }
@@ -405,7 +591,7 @@ function nextWritingTop() {
 
 async function addHumanizedText(value) {
   if (!value.trim()) return toast('Escribe algo primero.');
-  const lineHeight = paperLineHeight(), size = lineHeight * .76, left = pageLeftMargin(), maxWidth = canvas.width - left - 55, glyphs = currentProject().glyphs, amount = Number($('#humanize').value) / 100;
+  const lineHeight = paperLineHeight(), size = lineHeight * .76, left = pageLeftMargin(), maxWidth = canvas.width - left - 55, glyphs = sharedGlyphs, amount = Number($('#humanize').value) / 100;
   let startTop = nextWritingTop(); if (startTop > canvas.height - lineHeight * 2 - 55) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); startTop = 64; }
   const pages = [[]]; let page = 0, row = 0, x = 0;
   const capacity = (pageNumber) => Math.max(1, Math.floor((canvas.height - (pageNumber ? 64 : startTop) - 55) / lineHeight));
@@ -413,7 +599,7 @@ async function addHumanizedText(value) {
   const tokens = value.replace(/\r/g, '').split(/(\s+)/);
   tokens.forEach((token) => {
     if (!token) return;
-    if (/^\s+$/.test(token)) { [...token].forEach((character) => { if (character === '\n') newLine(); else if (x) x += size * (.34 + Math.random() * .10); }); return; }
+    if (/^\s+$/.test(token)) { [...token].forEach((character) => { if (character === '\n') newLine(); else if (x) x += size * (.37 + (Math.random() - .5) * .08 * amount); }); return; }
     const letters = [...token].map((character) => makeHumanizedCharacter(character, size, glyphs, amount)); const wordWidth = letters.reduce((sum, letter) => sum + letter.advance, 0);
     if (x && x + wordWidth > maxWidth) newLine();
     letters.forEach(({ object, advance }) => { if (x && x + advance > maxWidth) newLine(); object.set({ left: x, top: row * lineHeight + object.top }); pages[page].push(object); x += advance; });
@@ -421,7 +607,7 @@ async function addHumanizedText(value) {
   for (let index = 0; index < pages.length; index += 1) {
     if (index) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); }
     if (!pages[index].length) continue;
-    const group = new fabric.Group(pages[index], { left, top: index ? 64 : startTop, trazoType: 'humanized-text' }); canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll(); saveCurrentPage();
+    const group = new fabric.Group(pages[index], { left, top: index ? 64 : startTop, trazoType: 'humanized-text', sourceText: value, humanizeAmount: amount }); canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll(); saveCurrentPage();
   }
   scheduleSave(); toast(pages.length > 1 ? `Texto acomodado en ${pages.length} páginas.` : 'Texto alineado a los renglones y al margen.');
 }
@@ -432,16 +618,21 @@ canvas.on('object:added', () => scheduleSave()); canvas.on('object:removed', () 
   const bounds = object.getBoundingRect();
   if (bounds.top + bounds.height > canvas.height + 20) {
     movingOverflowObject = true; canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1;
-    loadPage(pageIndex, { saveBefore: false }).then(() => { object.set({ top: 64, left: pageLeftMargin() }); fitObjectInsidePage(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); saveCurrentPage(); toast('El elemento pasó a una sola página nueva.'); }).finally(() => { movingOverflowObject = false; });
+    void loadPage(pageIndex, { saveBefore: false }).then(() => { object.set({ top: 64, left: pageLeftMargin() }); fitObjectInsidePage(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); saveCurrentPage(); toast('El elemento pasó a una sola página nueva.'); }).catch(() => toast('No se pudo mover el elemento a otra página.')).finally(() => { movingOverflowObject = false; });
   } else scheduleSave();
 });
 canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
+canvas.on('mouse:down', (event) => {
+  if (activeTool !== 'erase' || !event.target) return;
+  if (event.target.trazoType === 'drawing') { canvas.remove(event.target); canvas.discardActiveObject(); canvas.requestRenderAll(); scheduleSave(); toast('Trazo borrado.'); }
+  else toast('El borrador de trazo sólo elimina dibujos.');
+});
 canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection);
 function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') syncColorControls(object.fill); $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; }
 
 $$('.toolrail button').forEach((button) => button.onclick = () => switchTool(button.dataset.tool));
 $('#panelClose').onclick = () => $('#panel').classList.remove('open');
-$('#projectSelect').onchange = (event) => openProject(event.target.value);
+$('#projectSelect').onchange = (event) => { void openProject(event.target.value); };
 $('#newProject').onclick = async () => { const name = prompt('Nombre de la nueva tarea:'); if (name !== null) await createProject(name.trim()); };
 $('#duplicateProject').onclick = async () => { saveAll(); const copy = JSON.parse(JSON.stringify(currentProject())); copy.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); copy.name += ' (copia)'; projects.unshift(copy); currentProjectId = copy.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); };
 $('#deleteProject').onclick = async () => { if (projects.length === 1) return toast('Debe quedar al menos una tarea.'); if (!confirm(`¿Eliminar “${currentProject().name}”?`)) return; saveAll(); projects = projects.filter((project) => project.id !== currentProjectId); currentProjectId = projects[0].id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); };
@@ -460,20 +651,23 @@ $('#duplicateObject').onclick = async () => { const object = selected(); if (!ob
 $('#lockObject').onclick = () => { const object = selected(); if (!object) return; unlockState(object, !object.locked); canvas.discardActiveObject(); canvas.requestRenderAll(); scheduleSave(); };
 $('#frontObject').onclick = () => { const object = selected(); if (object) { canvas.bringObjectToFront(object); scheduleSave(); } };
 $('#backObject').onclick = () => { const object = selected(); if (object) { canvas.sendObjectToBack(object); addMarginGuide(currentProject().paperStyle); scheduleSave(); } };
-$('#addText').onclick = () => addText($('#textInput').value); $('#addHandText').onclick = () => addHumanizedText($('#handTextInput').value);
+$('#addText').onclick = () => { void addText($('#textInput').value); }; $('#addHandText').onclick = () => { void addHumanizedText($('#handTextInput').value); };
 $('#addNote').onclick = addAnnotation;
-$('#pencilMode').onclick = () => switchTool('draw'); $('#eraserMode').onclick = () => { switchTool('select'); toast('Selecciona el dibujo y toca Eliminar.'); }; $('#finishDrawing').onclick = () => switchTool('select');
+$('#pencilMode').onclick = () => setDrawingMode('pencil'); $('#highlighterMode').onclick = () => setDrawingMode('highlighter'); $('#eraserMode').onclick = () => { activeTool = 'erase'; brushMode = 'eraser'; syncInteractionMode(); $('#pencilMode').classList.remove('active'); $('#highlighterMode').classList.remove('active'); $('#eraserMode').classList.add('active'); toast('Toca un trazo para borrarlo.'); }; $('#finishDrawing').onclick = () => switchTool('select');
 $('#symbolTabs').onclick = (event) => { const button = event.target.closest('[data-category]'); if (button) { activeSymbolCategory = button.dataset.category; renderSymbols(); } };
 $('#symbolGrid').onclick = (event) => { const button = event.target.closest('[data-symbol]'); if (button) insertSymbol(button.dataset.symbol); };
+$$('[data-diagram]').forEach((button) => button.onclick = () => insertDiagram(button.dataset.diagram));
 $('#symbolSearch').oninput = renderSymbols; $('#chooseImage').onclick = () => $('#imageFile').click(); $('#imageFile').onchange = (event) => { if (event.target.files[0]) readImage(event.target.files[0]); event.target.value = ''; };
-$('#makeCover').onclick = applyCover; $('#saveCoverTemplate').onclick = () => { currentProject().coverTemplate = { title: $('#coverTitle').value, student: $('#coverStudent').value, subject: $('#coverSubject').value, teacher: $('#coverTeacher').value, date: $('#coverDate').value, style: $('#coverStyle').value }; scheduleSave(false); toast('Plantilla guardada para esta tarea.'); };
-$('#applyPageStyle').onclick = () => resizePages($('#orientation').value, $('#paperStyle').value);
+$('#cropImageSquare').onclick = () => cropSelectedImage(true); $('#restoreImageCrop').onclick = () => cropSelectedImage(false);
+$('#makeCover').onclick = applyCover; $('#saveCoverTemplate').onclick = saveCoverTemplate; $('#loadCoverTemplate').onclick = loadCoverTemplate; $('#deleteCoverTemplate').onclick = () => deleteTemplate('cover', '#coverTemplateSelect');
+$('#applyPageStyle').onclick = () => { void resizePages($('#orientation').value, $('#paperStyle').value); };
+$('#savePageTemplate').onclick = savePageTemplate; $('#insertPageTemplate').onclick = () => { void insertPageTemplate(); }; $('#deletePageTemplate').onclick = () => deleteTemplate('page', '#pageTemplateSelect');
 $('#rotateView').onclick = rotateView;
-$('#prevPage').onclick = () => loadPage(pageIndex - 1); $('#nextPage').onclick = () => loadPage(pageIndex + 1); $('#addPage').onclick = () => addPage(); $('#deletePage').onclick = async () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); };
+$('#prevPage').onclick = () => { void loadPage(pageIndex - 1); }; $('#nextPage').onclick = () => { void loadPage(pageIndex + 1); }; $('#addPage').onclick = () => { void addPage(); }; $('#duplicatePage').onclick = () => { void duplicatePage(); }; $('#movePageLeft').onclick = () => { void movePage(-1); }; $('#movePageRight').onclick = () => { void movePage(1); }; $('#deletePage').onclick = async () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); };
 $('#zoomIn').onclick = () => { zoom = Math.min(MAX_ZOOM, zoom + (zoom >= 1 ? .2 : .1)); applyZoom(); }; $('#zoomOut').onclick = () => { zoom = Math.max(MIN_ZOOM, zoom - (zoom > 1 ? .2 : .1)); applyZoom(); };
-$('#exportProject').onclick = exportEditable; $('#importProject').onclick = () => $('#projectFile').click(); $('#projectFile').onchange = (event) => { if (event.target.files[0]) importEditable(event.target.files[0]); event.target.value = ''; }; $('#exportPdf').onclick = () => makePdf(false); $('#sharePdf').onclick = () => makePdf(true);
-const glyphPad = $('#glyphPad'); glyphPad.onpointerdown = (event) => { glyphDrawing = true; glyphPad.setPointerCapture(event.pointerId); glyphDraft.push([glyphPoint(event)]); drawGlyphPad(); }; glyphPad.onpointermove = (event) => { if (glyphDrawing) { glyphDraft.at(-1).push(glyphPoint(event)); drawGlyphPad(); } }; glyphPad.onpointerup = () => glyphDrawing = false; glyphPad.onpointercancel = () => glyphDrawing = false; $('#glyphUndo').onclick = () => { glyphDraft.pop(); drawGlyphPad(); }; $('#glyphClear').onclick = () => { glyphDraft = []; drawGlyphPad(); }; $('#glyphSave').onclick = saveGlyph; $('#glyphCharacter').oninput = updateGlyphStatus; $('#glyphVariants').onclick = (event) => { const button = event.target.closest('[data-delete-variant]'); if (!button) return; const character = $('#glyphCharacter').value.toLowerCase(); currentProject().glyphs[character].splice(Number(button.dataset.deleteVariant), 1); updateGlyphStatus(); scheduleSave(false); toast('Variante eliminada.'); };
-window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#colorOverlay').hidden) closeColorPicker(false); if ((event.ctrlKey || event.metaKey) && event.key === 'z') { event.preventDefault(); restoreHistory(event.shiftKey ? historyIndex + 1 : historyIndex - 1); } if ((event.key === 'Delete' || event.key === 'Backspace') && document.activeElement.tagName === 'BODY') { const object = selected(); if (object && !object.locked) canvas.remove(object); } });
+$('#exportProject').onclick = () => { void exportEditable(); }; $('#importProject').onclick = () => $('#projectFile').click(); $('#projectFile').onchange = (event) => { if (event.target.files[0]) void importEditable(event.target.files[0]); event.target.value = ''; }; $('#exportPdf').onclick = () => { void makePdf(false); }; $('#sharePdf').onclick = () => { void makePdf(true); };
+const glyphPad = $('#glyphPad'); glyphPad.onpointerdown = (event) => { glyphDrawing = true; glyphPad.setPointerCapture(event.pointerId); glyphDraft.push([glyphPoint(event)]); drawGlyphPad(); }; glyphPad.onpointermove = (event) => { if (glyphDrawing) { glyphDraft.at(-1).push(glyphPoint(event)); drawGlyphPad(); } }; glyphPad.onpointerup = () => glyphDrawing = false; glyphPad.onpointercancel = () => glyphDrawing = false; $('#glyphUndo').onclick = () => { glyphDraft.pop(); drawGlyphPad(); }; $('#glyphClear').onclick = () => { glyphDraft = []; drawGlyphPad(); }; $('#glyphSave').onclick = saveGlyph; $('#glyphCharacter').oninput = updateGlyphStatus; $('#glyphVariants').onclick = (event) => { const button = event.target.closest('[data-delete-variant]'); if (!button) return; const character = glyphCharacter(); sharedGlyphs[character].splice(Number(button.dataset.deleteVariant), 1); updateGlyphStatus(); scheduleSave(false); toast('Variante eliminada.'); };
+window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#colorOverlay').hidden) closeColorPicker(false); if ((event.ctrlKey || event.metaKey) && event.key === 'z') { event.preventDefault(); void restoreHistory(event.shiftKey ? historyIndex + 1 : historyIndex - 1); } if ((event.key === 'Delete' || event.key === 'Backspace') && document.activeElement.tagName === 'BODY') { const object = selected(); if (object && !object.locked) canvas.remove(object); } });
 window.addEventListener('resize', () => { if (window.innerWidth < 600) zoom = .43; else if (window.innerWidth < 900) zoom = .62; applyZoom(); });
 
-$('#coverDate').valueAsDate = new Date(); updateProjectSelect(); renderSymbols(); renderColorChoices(); setPageDimensions(); loadPage(0); drawGlyphPad(); updateGlyphStatus();
+$('#coverDate').valueAsDate = new Date(); updateProjectSelect(); renderSymbols(); renderColorChoices(); renderTemplateControls(); setPageDimensions(); void loadPage(0); void restoreBackupIfNeeded(); drawGlyphPad(); updateGlyphStatus();

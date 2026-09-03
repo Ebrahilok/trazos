@@ -14,7 +14,7 @@ para continuar una tarea en otra tablet.
 
 ## Descargar para Android
 
-[Descargar Trazo 2.3 APK](apk/Trazo-tablet-v2.3.apk)
+[Descargar Trazo 2.4 APK](apk/Trazo-tablet-v2.4.apk)
 
 Compatible con Android 7 o posterior. La aplicación funciona sin conexión; sólo
 necesita internet cuando se comparte un archivo mediante Drive o WhatsApp.
@@ -32,6 +32,13 @@ La escritura personalizada detecta los renglones, comienza después del margen y
 distribuye automáticamente el texto largo entre páginas. Las anotaciones rápidas
 también se ajustan a la cuadrícula de la hoja. Se corrigió la duplicación de
 páginas al desbordar contenido y la mezcla de páginas al cambiar de actividad.
+
+La versión 2.4 comparte la biblioteca de letras entre todas las tareas, conserva
+por separado mayúsculas y minúsculas y construye vocales acentuadas a partir de
+la letra base. Incluye plantillas globales de portada y página, recorte cuadrado
+de imágenes, resaltador, borrado por trazo, figuras de esquema y controles para
+duplicar y reordenar páginas. Los proyectos también mantienen una copia de
+respaldo local en IndexedDB.
 
 ## Web
 

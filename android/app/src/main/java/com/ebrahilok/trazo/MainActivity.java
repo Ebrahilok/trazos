@@ -83,12 +83,18 @@ public class MainActivity extends Activity {
                             Intent intent = new Intent(Intent.ACTION_SEND);
                             intent.setType(mime); intent.putExtra(Intent.EXTRA_STREAM, finalUri); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                             startActivity(Intent.createChooser(intent, "Compartir con WhatsApp, Drive u otra aplicación"));
-                        } else Toast.makeText(MainActivity.this, "Guardado en Descargas/Trazo", Toast.LENGTH_LONG).show();
+                        } else Toast.makeText(MainActivity.this, Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? "Guardado en Descargas/Trazo" : "Guardado en los archivos privados de Trazo. Usa Compartir para enviarlo a Drive.", Toast.LENGTH_LONG).show();
                     });
                 } catch (Exception error) { runOnUiThread(() -> Toast.makeText(MainActivity.this, "No se pudo guardar el archivo", Toast.LENGTH_LONG).show()); }
             }).start();
         }
     }
 
-    @Override public void onBackPressed() { if (webView.canGoBack()) webView.goBack(); else super.onBackPressed(); }
+    @Override public void onBackPressed() {
+        webView.evaluateJavascript("(function(){var color=document.getElementById('colorOverlay');if(color&&!color.hidden){color.hidden=true;return true}var panel=document.getElementById('panel');if(panel&&panel.classList.contains('open')){panel.classList.remove('open');return true}return false})()", handled -> {
+            if (!"true".equals(handled)) { if (webView.canGoBack()) webView.goBack(); else finishBack(); }
+        });
+    }
+
+    private void finishBack() { super.onBackPressed(); }
 }
