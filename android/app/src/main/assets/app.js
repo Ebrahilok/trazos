@@ -377,7 +377,7 @@ async function loadPage(index, options = {}) {
   setPageDimensions(); restoring = true; canvas.clear();
   const page = currentProject().pages[pageIndex];
   if (page) await canvas.loadFromJSON(page);
-  canvas.getObjects().forEach(ensureObjectMetadata); applyPaper(); refreshConnectors(); canvas.renderAll(); restoring = false; history = []; historyIndex = -1; recordHistory(); updatePageLabel(); renderLayers(); syncProjectSettingsUI();
+  const oldErasers = canvas.getObjects().filter((object) => object.trazoType === 'eraser-mark'); oldErasers.forEach((object) => canvas.remove(object)); canvas.getObjects().forEach(ensureObjectMetadata); applyPaper(); refreshConnectors(); canvas.renderAll(); if (oldErasers.length) currentProject().pages[pageIndex] = serializePage(); restoring = false; history = []; historyIndex = -1; recordHistory(); updatePageLabel(); renderLayers(); syncProjectSettingsUI();
 }
 
 function updatePageLabel() {
@@ -707,6 +707,31 @@ function recognizeDrawnShape(path) {
   if (!replacement) return path; canvas.remove(path); ensureObjectMetadata(replacement); canvas.add(replacement); canvas.setActiveObject(replacement); canvas.requestRenderAll(); toast('Trazo convertido en una forma limpia.'); return replacement;
 }
 
+function pathPointsOnCanvas(object) {
+  let points = [];
+  if (object.path) points = object.path.map((command) => command.slice(-2)).filter((point) => point.length === 2 && point.every(Number.isFinite));
+  else if (object.points) points = object.points.map((point) => [point.x, point.y]);
+  if (!points.length) return [];
+  const offset = object.pathOffset || { x: 0, y: 0 }, matrix = object.calcTransformMatrix();
+  return points.map(([x, y]) => fabric.util.transformPoint(new fabric.Point(x - offset.x, y - offset.y), matrix));
+}
+function densifyPoints(points, spacing = 5) {
+  const result = []; for (let index = 0; index < points.length - 1; index += 1) { const start = points[index], end = points[index + 1], distance = Math.hypot(end.x - start.x, end.y - start.y), steps = Math.max(1, Math.ceil(distance / spacing)); for (let step = 0; step < steps; step += 1) result.push({ x: start.x + (end.x - start.x) * step / steps, y: start.y + (end.y - start.y) * step / steps }); } if (points.length) result.push(points.at(-1)); return result;
+}
+function boxesOverlap(first, second) { return first.left <= second.left + second.width && first.left + first.width >= second.left && first.top <= second.top + second.height && first.top + first.height >= second.top; }
+function eraseDrawingParts(eraserPath) {
+  const eraserPoints = densifyPoints(pathPointsOnCanvas(eraserPath), 4), radius = Math.max(8, eraserPath.strokeWidth / 2), eraserBounds = eraserPath.getBoundingRect(); let changed = false;
+  canvas.remove(eraserPath); if (eraserPoints.length < 2) return;
+  canvas.getObjects().filter((object) => object.trazoType === 'drawing' && boxesOverlap(object.getBoundingRect(), eraserBounds)).forEach((object) => {
+    const points = densifyPoints(pathPointsOnCanvas(object), 4); if (points.length < 2) { canvas.remove(object); changed = true; return; }
+    const scale = object.getObjectScaling?.() || { x: 1, y: 1 }, threshold = radius + Number(object.strokeWidth || 1) * (scale.x + scale.y) / 4;
+    const kept = []; let segment = []; points.forEach((point) => { const erased = eraserPoints.some((eraserPoint) => Math.hypot(point.x - eraserPoint.x, point.y - eraserPoint.y) <= threshold); if (erased) { if (segment.length > 1) kept.push(segment); segment = []; changed = true; } else segment.push(point); }); if (segment.length > 1) kept.push(segment); if (!changed || kept.length === 1 && kept[0].length === points.length) return;
+    const objectIndex = canvas.getObjects().indexOf(object), strokeWidth = Number(object.strokeWidth || 1) * (scale.x + scale.y) / 2; canvas.remove(object);
+    kept.forEach((part, offset) => { const replacement = new fabric.Polyline(part, { fill: '', stroke: object.stroke, strokeWidth, opacity: object.opacity, strokeLineCap: 'round', strokeLineJoin: 'round', trazoType: 'drawing', layerName: object.layerName || 'Dibujo' }); ensureObjectMetadata(replacement); canvas.add(replacement); canvas.moveObjectTo(replacement, Math.max(1, objectIndex + offset)); });
+  });
+  canvas.discardActiveObject(); canvas.requestRenderAll(); renderLayers(); scheduleSave(); toast(changed ? 'Se borró sólo una parte del dibujo.' : 'El borrador no tocó ningún dibujo.');
+}
+
 canvas.on('object:added', (event) => { ensureObjectMetadata(event.target); renderLayers(); scheduleSave(); }); canvas.on('object:removed', () => { renderLayers(); scheduleSave(); }); canvas.on('object:moving', refreshConnectors); canvas.on('object:scaling', refreshConnectors); canvas.on('object:rotating', refreshConnectors); canvas.on('object:modified', (event) => {
   const object = event.target; if (!object || object.trazoType === 'page-guide' || movingOverflowObject) return scheduleSave();
   const alignable = ['humanized-text','hand-text','text','annotation'].includes(object.trazoType); if (alignable) fitObjectInsidePage(object);
@@ -716,7 +741,7 @@ canvas.on('object:added', (event) => { ensureObjectMetadata(event.target); rende
     void loadPage(pageIndex, { saveBefore: false }).then(() => { object.set({ top: 64, left: pageLeftMargin() }); fitObjectInsidePage(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); saveCurrentPage(); toast('El elemento pasó a una sola página nueva.'); }).catch(() => toast('No se pudo mover el elemento a otra página.')).finally(() => { movingOverflowObject = false; });
   } else { refreshConnectors(); renderLayers(); scheduleSave(); }
 });
-canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: brushMode === 'eraser' ? 'eraser-mark' : 'drawing', layerName: brushMode === 'eraser' ? 'Borrado parcial' : 'Dibujo' }); ensureObjectMetadata(event.path); if (brushMode !== 'eraser') recognizeDrawnShape(event.path); canvas.freeDrawingBrush.width = baseBrushWidth; renderLayers(); scheduleSave(); });
+canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } if (brushMode === 'eraser') { eraseDrawingParts(event.path); canvas.freeDrawingBrush.width = baseBrushWidth; return; } event.path.set({ trazoType: 'drawing', layerName: 'Dibujo' }); ensureObjectMetadata(event.path); recognizeDrawnShape(event.path); canvas.freeDrawingBrush.width = baseBrushWidth; renderLayers(); scheduleSave(); });
 canvas.on('mouse:dblclick', (event) => { if (event.target?.trazoType === 'humanized-text') { canvas.setActiveObject(event.target); editSelectedHumanizedText(); } });
 canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection); canvas.on('selection:cleared', renderLayers);
 function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') syncColorControls(object.fill); $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; renderLayers(); }

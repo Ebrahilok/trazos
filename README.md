@@ -14,7 +14,7 @@ para continuar una tarea en otra tablet.
 
 ## Descargar para Android
 
-[Descargar Trazo 2.5 APK](apk/Trazo-tablet-v2.5.apk)
+[Descargar Trazo 2.5.1 APK](apk/Trazo-tablet-v2.5.1.apk)
 
 Compatible con Android 7 o posterior. La aplicación funciona sin conexión; sólo
 necesita internet cuando se comparte un archivo mediante Drive o WhatsApp.
@@ -46,6 +46,8 @@ Incluye miniaturas para ordenar páginas, conectores que siguen a las figuras,
 capas con visibilidad y orden, versiones restaurables y un asistente que muestra
 qué letras faltan. El PDF puede usar tamaño Carta o A4, márgenes y rangos de
 páginas. El modo lectura oculta las herramientas para revisar la tarea terminada.
+El borrador parcial recorta sólo los trazos dibujados y nunca tapa el fondo, los
+renglones ni el margen de la hoja.
 
 ## Web
 
