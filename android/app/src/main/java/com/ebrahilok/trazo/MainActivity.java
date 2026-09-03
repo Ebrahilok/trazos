@@ -91,7 +91,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        webView.evaluateJavascript("(function(){var color=document.getElementById('colorOverlay');if(color&&!color.hidden){color.hidden=true;return true}var panel=document.getElementById('panel');if(panel&&panel.classList.contains('open')){panel.classList.remove('open');return true}return false})()", handled -> {
+        webView.evaluateJavascript("(function(){if(document.body.classList.contains('reading')){document.getElementById('exitReading').click();return true}var color=document.getElementById('colorOverlay');if(color&&!color.hidden){color.hidden=true;return true}var panel=document.getElementById('panel');if(panel&&panel.classList.contains('open')){panel.classList.remove('open');return true}return false})()", handled -> {
             if (!"true".equals(handled)) { if (webView.canGoBack()) webView.goBack(); else finishBack(); }
         });
     }

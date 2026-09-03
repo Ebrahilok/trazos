@@ -5,7 +5,7 @@ const STORE = 'trazo-projects-v3';
 const FONT_STORE = 'trazo-font-library-v1';
 const TEMPLATE_STORE = 'trazo-page-templates-v1';
 const PAGE = { portrait: [816, 1056], landscape: [1056, 816] };
-const extraProps = ['locked', 'trazoType', 'sourceText', 'humanizeAmount', 'originalWidth', 'originalHeight'];
+const extraProps = ['locked', 'trazoType', 'sourceText', 'humanizeAmount', 'textFlowId', 'originalWidth', 'originalHeight', 'objectId', 'connectorFrom', 'connectorTo', 'layerName'];
 let projects = [];
 let sharedGlyphs = {};
 let pageTemplates = [];
@@ -23,6 +23,8 @@ let glyphDraft = [];
 let glyphDrawing = false;
 let baseBrushWidth = 5;
 let brushMode = 'pencil';
+let pendingHumanizedEdit = null;
+let thumbnailRun = 0;
 let pinchState = null;
 let pinchDiscardUntil = 0;
 const touchPointers = new Map();
@@ -39,11 +41,12 @@ try { pageTemplates = JSON.parse(localStorage.getItem(TEMPLATE_STORE) || '[]'); 
 const starterProject = () => ({
   id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
   name: 'Mi primera tarea', orientation: 'portrait', paperStyle: 'ruled',
-  pages: [null], glyphs: {}, coverTemplate: null, updatedAt: Date.now()
+  pages: [null], glyphs: {}, coverTemplate: null, snapshots: [], exportSettings: { format: 'letter', margin: 0, range: '' }, updatedAt: Date.now()
 });
 
 try { projects = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { projects = []; }
 if (!projects.length) projects = [starterProject()];
+projects.forEach((project) => { project.snapshots ||= []; project.exportSettings ||= { format: 'letter', margin: 0, range: '' }; });
 if (!Object.keys(sharedGlyphs).length) {
   projects.forEach((project) => Object.entries(project.glyphs || {}).forEach(([character, variants]) => {
     (sharedGlyphs[character] ||= []).push(...variants);
@@ -126,7 +129,7 @@ function syncColorControls(value) {
   $$('#colorPresets button,#recentColors button').forEach((button) => button.classList.toggle('selected', button.dataset.color === color));
 }
 function applyObjectColor(value) {
-  const color = normalizeHex(value); if (!color) return false; syncColorControls(color); canvas.freeDrawingBrush.color = brushMode === 'highlighter' ? `${color}55` : color;
+  const color = normalizeHex(value); if (!color) return false; syncColorControls(color); canvas.freeDrawingBrush.color = brushMode === 'highlighter' ? `${color}55` : brushMode === 'eraser' ? '#FFFEFA' : color;
   const object = selected(); if (object && typeof object.fill === 'string') { object.set('fill', color); if (object.stroke) object.set('stroke', color); canvas.requestRenderAll(); scheduleSave(); }
   drawGlyphPad(); return true;
 }
@@ -147,6 +150,51 @@ function updateProjectSelect() {
 }
 
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character])); }
+
+function objectId() { return crypto.randomUUID ? crypto.randomUUID() : `obj-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function ensureObjectMetadata(object) {
+  if (!object || object.trazoType === 'page-guide') return;
+  object.objectId ||= objectId(); object.layerName ||= objectLabel(object);
+}
+function objectLabel(object) {
+  const labels = { text: 'Texto', 'hand-text': 'Texto manuscrito', 'humanized-text': 'Mi letra', drawing: 'Dibujo', 'eraser-mark': 'Borrado', annotation: 'Anotación', image: 'Imagen', symbol: 'Símbolo', diagram: 'Figura', connector: 'Conector', 'cover-text': 'Texto de portada', 'cover-decoration': 'Decoración' };
+  const preview = object?.text || object?.sourceText;
+  return preview ? `${labels[object.trazoType] || 'Elemento'}: ${preview.slice(0, 24)}` : (labels[object?.trazoType] || 'Elemento');
+}
+function visibleObjects() { return canvas.getObjects().filter((object) => object.trazoType !== 'page-guide'); }
+function renderLayers() {
+  const objects = visibleObjects().slice().reverse(); const active = selected();
+  $('#layerList').innerHTML = objects.length ? objects.map((object) => {
+    ensureObjectMetadata(object); const selectedClass = active === object || active?.getObjects?.().includes(object) ? ' selected' : '';
+    return `<div class="layer-item${selectedClass}" data-layer-id="${object.objectId}"><button class="layer-eye" data-layer-action="visibility" title="Mostrar u ocultar">${object.visible === false ? '○' : '◉'}</button><button class="layer-name" data-layer-action="select">${escapeHtml(object.layerName)}</button><button data-layer-action="up" title="Subir">↑</button><button data-layer-action="down" title="Bajar">↓</button></div>`;
+  }).join('') : '<p class="muted">Esta página todavía no tiene elementos.</p>';
+}
+function renderSnapshots() {
+  const snapshots = currentProject().snapshots || []; $('#snapshotSelect').innerHTML = snapshots.length ? snapshots.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('') : '<option value="">Sin versiones</option>';
+}
+function saveSnapshot() {
+  saveCurrentPage(); const project = currentProject(); const stamp = new Date(); const name = prompt('Nombre de esta versión:', `Versión ${stamp.toLocaleDateString('es-MX')} ${stamp.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`);
+  if (name === null) return; project.snapshots ||= []; project.snapshots.unshift({ id: templateId(), name: name.trim() || 'Versión guardada', createdAt: Date.now(), pages: JSON.parse(JSON.stringify(project.pages)), orientation: project.orientation, paperStyle: project.paperStyle }); project.snapshots = project.snapshots.slice(0, 20); renderSnapshots(); scheduleSave(false); toast('Versión guardada.');
+}
+async function restoreSnapshot() {
+  const snapshot = currentProject().snapshots?.find((item) => item.id === $('#snapshotSelect').value); if (!snapshot) return toast('No hay una versión seleccionada.');
+  if (!confirm(`¿Restaurar “${snapshot.name}”? La versión actual se reemplazará.`)) return; currentProject().pages = JSON.parse(JSON.stringify(snapshot.pages)); currentProject().orientation = snapshot.orientation; currentProject().paperStyle = snapshot.paperStyle; pageIndex = 0; await loadPage(0, { saveBefore: false }); scheduleSave(false); toast('Versión restaurada.');
+}
+function deleteSnapshot() {
+  const id = $('#snapshotSelect').value; if (!id) return toast('No hay una versión seleccionada.'); currentProject().snapshots = currentProject().snapshots.filter((item) => item.id !== id); renderSnapshots(); scheduleSave(false); toast('Versión eliminada.');
+}
+async function renderPageThumbnails() {
+  const run = ++thumbnailRun; saveCurrentPage(); const project = currentProject();
+  $('#pageThumbnails').innerHTML = project.pages.map((page, index) => `<button class="page-thumb${index === pageIndex ? ' active' : ''}" data-page-index="${index}"><span class="thumb-paper"></span><b>${index + 1}</b></button>`).join('');
+  for (let index = 0; index < project.pages.length; index += 1) {
+    if (run !== thumbnailRun) return; const button = $(`[data-page-index="${index}"]`); if (!button) continue;
+    const element = document.createElement('canvas'); const preview = new fabric.StaticCanvas(element, { width: PAGE[project.orientation][0], height: PAGE[project.orientation][1] });
+    if (project.pages[index]) await preview.loadFromJSON(project.pages[index]); preview.backgroundColor = patternFor(project.paperStyle); preview.renderAll(); const image = document.createElement('img'); image.alt = `Página ${index + 1}`; image.src = preview.toDataURL({ format: 'jpeg', quality: .55, multiplier: .16 }); button.querySelector('span').replaceWith(image); preview.dispose();
+  }
+}
+function syncProjectSettingsUI() {
+  const settings = currentProject().exportSettings ||= { format: 'letter', margin: 0, range: '' }; $('#pdfFormat').value = settings.format || 'letter'; $('#pdfMargin').value = String(settings.margin || 0); $('#pdfRange').value = settings.range || ''; renderSnapshots();
+}
 
 function templateId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
 function renderTemplateControls() {
@@ -194,7 +242,7 @@ function savePageTemplate() {
 async function insertPageTemplate() {
   const template = pageTemplates.find((item) => item.id === $('#pageTemplateSelect').value && item.type === 'page');
   if (!template) return toast('Elige una plantilla primero.');
-  saveCurrentPage(); currentProject().pages.splice(pageIndex + 1, 0, JSON.parse(JSON.stringify(template.data.page))); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); canvas.getObjects().filter((object) => object.trazoType !== 'page-guide').forEach(fitObjectInsidePage); canvas.requestRenderAll(); scheduleSave(false); toast('Plantilla insertada como página nueva.');
+  saveCurrentPage(); currentProject().pages.splice(pageIndex + 1, 0, JSON.parse(JSON.stringify(template.data.page))); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); canvas.getObjects().filter((object) => object.trazoType !== 'page-guide').forEach(fitObjectInsidePage); canvas.requestRenderAll(); void renderPageThumbnails(); scheduleSave(false); toast('Plantilla insertada como página nueva.');
 }
 
 function patternFor(style) {
@@ -236,7 +284,7 @@ function applyZoom() {
 }
 
 function syncInteractionMode() {
-  const viewOnly = viewRotation !== 0; canvas.isDrawingMode = !viewOnly && activeTool === 'draw'; canvas.selection = !viewOnly && !['draw','erase'].includes(activeTool); canvas.skipTargetFind = viewOnly || activeTool === 'draw';
+  const viewOnly = viewRotation !== 0; canvas.isDrawingMode = !viewOnly && ['draw','erase'].includes(activeTool); canvas.selection = !viewOnly && !['draw','erase'].includes(activeTool); canvas.skipTargetFind = viewOnly || ['draw','erase'].includes(activeTool);
   $('#canvasShell').classList.toggle('view-rotated', viewOnly); $('#rotationLabel').textContent = `${viewRotation}°`;
 }
 
@@ -329,23 +377,24 @@ async function loadPage(index, options = {}) {
   setPageDimensions(); restoring = true; canvas.clear();
   const page = currentProject().pages[pageIndex];
   if (page) await canvas.loadFromJSON(page);
-  applyPaper(); canvas.renderAll(); restoring = false; history = []; historyIndex = -1; recordHistory(); updatePageLabel();
+  canvas.getObjects().forEach(ensureObjectMetadata); applyPaper(); refreshConnectors(); canvas.renderAll(); restoring = false; history = []; historyIndex = -1; recordHistory(); updatePageLabel(); renderLayers(); syncProjectSettingsUI();
 }
 
 function updatePageLabel() {
   $('#pageLabel').textContent = `Página ${pageIndex + 1} de ${currentProject().pages.length}`;
   $('#prevPage').disabled = pageIndex === 0; $('#nextPage').disabled = pageIndex === currentProject().pages.length - 1;
   $('#movePageLeft').disabled = pageIndex === 0; $('#movePageRight').disabled = pageIndex === currentProject().pages.length - 1;
+  $$('.page-thumb').forEach((button) => button.classList.toggle('active', Number(button.dataset.pageIndex) === pageIndex));
 }
 
 async function openProject(id) {
-  saveAll(); currentProjectId = id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); updateGlyphStatus();
+  saveAll(); currentProjectId = id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); updateGlyphStatus(); if ($('[data-panel="pages"]').classList.contains('active')) void renderPageThumbnails();
 }
 
 async function createProject(name) {
   saveAll();
   const project = starterProject(); project.name = name || `Tarea ${projects.length + 1}`;
-  projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus();
+  projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); if ($('[data-panel="pages"]').classList.contains('active')) void renderPageThumbnails();
 }
 
 function switchTool(tool) {
@@ -353,15 +402,17 @@ function switchTool(tool) {
   $$('.toolrail button').forEach((button) => button.classList.toggle('active', button.dataset.tool === tool));
   $$('.panel section').forEach((section) => section.classList.toggle('active', section.dataset.panel === tool));
   if (tool === 'image') $('#imageFile').click();
+  if (tool === 'pages') void renderPageThumbnails();
+  if (tool === 'layers') { renderLayers(); renderSnapshots(); }
   if (window.innerWidth <= 820 && tool !== 'select' && tool !== 'image') $('#panel').classList.add('open');
   const hints = { draw: 'Dibuja con el lápiz o el dedo. La presión modifica el grosor cuando está disponible.', select: 'Toca un elemento para moverlo, girarlo o cambiar su tamaño.' };
   $('#toolHint').textContent = viewRotation ? 'La hoja está girada sólo para verla. Vuelve a 0° para editar.' : (hints[tool] || 'Configura la herramienta en el panel lateral.');
 }
 
 function setDrawingMode(mode) {
-  brushMode = mode; baseBrushWidth = mode === 'highlighter' ? Math.max(14, Number($('#brushWidth').value)) : Number($('#brushWidth').value);
-  canvas.freeDrawingBrush.width = baseBrushWidth; canvas.freeDrawingBrush.color = mode === 'highlighter' ? `${normalizeHex($('#objectColor').value)}55` : $('#objectColor').value;
-  $('#pencilMode').classList.toggle('active', mode === 'pencil'); $('#highlighterMode').classList.toggle('active', mode === 'highlighter'); $('#eraserMode').classList.remove('active'); switchTool('draw');
+  brushMode = mode; baseBrushWidth = mode === 'highlighter' ? Math.max(14, Number($('#brushWidth').value)) : mode === 'eraser' ? Math.max(18, Number($('#brushWidth').value) * 3) : Number($('#brushWidth').value);
+  canvas.freeDrawingBrush.width = baseBrushWidth; canvas.freeDrawingBrush.color = mode === 'highlighter' ? `${normalizeHex($('#objectColor').value)}55` : mode === 'eraser' ? '#FFFEFA' : $('#objectColor').value;
+  $('#pencilMode').classList.toggle('active', mode === 'pencil'); $('#highlighterMode').classList.toggle('active', mode === 'highlighter'); $('#eraserMode').classList.toggle('active', mode === 'eraser'); activeTool = mode === 'eraser' ? 'erase' : 'draw'; syncInteractionMode();
 }
 
 function selected() { return canvas.getActiveObject(); }
@@ -370,7 +421,7 @@ function unlockState(object, locked) {
 }
 
 function addObject(object, center = true) {
-  if (center) canvas.centerObject(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); scheduleSave();
+  ensureObjectMetadata(object); if (center) canvas.centerObject(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); renderLayers(); scheduleSave();
 }
 
 async function addText(text, handwritten = false) {
@@ -449,6 +500,24 @@ function insertDiagram(type) {
   addObject(object);
 }
 
+function objectCenter(object) {
+  const bounds = object.getBoundingRect(); return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+}
+function setConnectorGeometry(connector, from, to) {
+  if (!connector || !from || !to) return; const start = objectCenter(from), end = objectCenter(to); const distance = Math.max(20, Math.hypot(end.x - start.x, end.y - start.y));
+  connector.set({ left: start.x, top: start.y, angle: Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI, scaleX: distance / (connector.originalWidth || 250) }); connector.setCoords();
+}
+function refreshConnectors() {
+  const objects = canvas.getObjects(); const byId = Object.fromEntries(objects.filter((object) => object.objectId).map((object) => [object.objectId, object]));
+  objects.filter((object) => object.trazoType === 'connector').forEach((connector) => setConnectorGeometry(connector, byId[connector.connectorFrom], byId[connector.connectorTo]));
+}
+function connectSelection() {
+  const active = selected(); const objects = active?.getObjects?.() || []; const targets = objects.filter((object) => object.trazoType !== 'connector' && object.trazoType !== 'page-guide');
+  if (targets.length !== 2) return toast('Selecciona exactamente dos objetos con el lazo.'); targets.forEach(ensureObjectMetadata); const color = $('#objectColor').value; const width = 250;
+  const line = new fabric.Line([0, 14, width - 18, 14], { stroke: color, strokeWidth: 5, strokeLineCap: 'round', selectable: false, evented: false }); const head = new fabric.Triangle({ left: width - 8, top: 14, width: 25, height: 28, fill: color, angle: 90, originX: 'center', originY: 'center', selectable: false, evented: false });
+  const connector = new fabric.Group([line, head], { originX: 'left', originY: 'center', selectable: false, evented: false, trazoType: 'connector', connectorFrom: targets[0].objectId, connectorTo: targets[1].objectId, originalWidth: width, layerName: 'Conector inteligente' }); ensureObjectMetadata(connector); setConnectorGeometry(connector, targets[0], targets[1]); canvas.add(connector); canvas.sendObjectToBack(connector); addMarginGuide(currentProject().paperStyle); canvas.discardActiveObject(); canvas.requestRenderAll(); renderLayers(); scheduleSave(); toast('Conector añadido. Se moverá con las figuras.');
+}
+
 function readImage(file) {
   const reader = new FileReader(); reader.onload = async () => {
     const image = await fabric.FabricImage.fromURL(reader.result);
@@ -483,23 +552,23 @@ function applyCover() {
 }
 
 async function addPage(auto = false) {
-  saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); if (auto) toast('Se creó una página nueva automáticamente.');
+  saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); if ($('[data-panel="pages"]').classList.contains('active')) void renderPageThumbnails(); scheduleSave(false); if (auto) toast('Se creó una página nueva automáticamente.');
 }
 
 async function duplicatePage() {
-  saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject().pages[pageIndex])); currentProject().pages.splice(pageIndex + 1, 0, copy); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Página duplicada.');
+  saveCurrentPage(); const copy = JSON.parse(JSON.stringify(currentProject().pages[pageIndex])); currentProject().pages.splice(pageIndex + 1, 0, copy); pageIndex += 1; await loadPage(pageIndex, { saveBefore: false }); if ($('[data-panel="pages"]').classList.contains('active')) void renderPageThumbnails(); scheduleSave(false); toast('Página duplicada.');
 }
 
 async function movePage(direction) {
   const target = pageIndex + direction; if (target < 0 || target >= currentProject().pages.length) return;
-  saveCurrentPage(); [currentProject().pages[pageIndex], currentProject().pages[target]] = [currentProject().pages[target], currentProject().pages[pageIndex]]; pageIndex = target; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Página reordenada.');
+  saveCurrentPage(); [currentProject().pages[pageIndex], currentProject().pages[target]] = [currentProject().pages[target], currentProject().pages[pageIndex]]; pageIndex = target; await loadPage(pageIndex, { saveBefore: false }); if ($('[data-panel="pages"]').classList.contains('active')) void renderPageThumbnails(); scheduleSave(false); toast('Página reordenada.');
 }
 
 async function resizePages(orientation, style) {
   saveCurrentPage(); currentProject().orientation = orientation; currentProject().paperStyle = style; await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); toast('Formato aplicado.');
 }
 
-function projectPayload() { saveCurrentPage(); return { type: 'trazo-project', version: 4, exportedAt: new Date().toISOString(), project: currentProject(), fontLibrary: sharedGlyphs, templates: pageTemplates }; }
+function projectPayload() { saveCurrentPage(); return { type: 'trazo-project', version: 5, exportedAt: new Date().toISOString(), project: currentProject(), fontLibrary: sharedGlyphs, templates: pageTemplates }; }
 function blobToBase64(blob) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => { if (typeof reader.result !== 'string') return reject(new Error('No se pudo leer el archivo')); resolve(reader.result.split(',')[1]); }; reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); }); }
 
 async function deliverBlob(blob, filename, share = false) {
@@ -513,15 +582,21 @@ async function exportEditable() {
   const blob = new Blob([JSON.stringify(projectPayload())], { type: 'application/x-trazo+json' }); await deliverBlob(blob, `${safeName(currentProject().name)}.trazo`); toast('Archivo editable guardado.');
 }
 
+function selectedPdfPages(total, value) {
+  const text = String(value || '').trim(); if (!text || /^todas$/i.test(text)) return Array.from({ length: total }, (_, index) => index);
+  const result = new Set(); for (const part of text.split(',')) { const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/); if (!match) continue; const start = Math.max(1, Number(match[1])), end = Math.min(total, Number(match[2] || match[1])); for (let page = Math.min(start, end); page <= Math.max(start, end); page += 1) if (page <= total) result.add(page - 1); }
+  return [...result].sort((a, b) => a - b);
+}
+
 async function makePdf(share = false) {
-  saveCurrentPage(); const project = currentProject(); const original = pageIndex; const orientation = project.orientation === 'landscape' ? 'landscape' : 'portrait';
+  saveCurrentPage(); const project = currentProject(); const original = pageIndex; const orientation = project.orientation === 'landscape' ? 'landscape' : 'portrait'; const settings = project.exportSettings ||= {}; settings.format = $('#pdfFormat').value; settings.margin = Number($('#pdfMargin').value); settings.range = $('#pdfRange').value.trim(); const pages = selectedPdfPages(project.pages.length, settings.range); if (!pages.length) return toast('Escribe un rango válido, por ejemplo: 1-3, 5.');
   try {
-    const pdf = new jspdf.jsPDF({ orientation, unit: 'pt', format: 'letter', compress: true }); const multiplier = project.pages.length > 12 ? 1.25 : 1.7;
-    for (let index = 0; index < project.pages.length; index += 1) {
-      $('#saveState').textContent = `PDF ${index + 1}/${project.pages.length}`; await loadPage(index); canvas.discardActiveObject(); canvas.renderAll();
-      if (index) pdf.addPage('letter', orientation);
-      const data = canvas.toDataURL({ format: 'png', multiplier }); const width = orientation === 'landscape' ? 792 : 612, height = orientation === 'landscape' ? 612 : 792;
-      pdf.addImage(data, 'PNG', 0, 0, width, height, undefined, 'FAST'); await new Promise((resolve) => requestAnimationFrame(resolve));
+    const pdf = new jspdf.jsPDF({ orientation, unit: 'pt', format: settings.format || 'letter', compress: true }); const multiplier = pages.length > 12 ? 1.25 : 1.7; const pageWidth = pdf.internal.pageSize.getWidth(), pageHeight = pdf.internal.pageSize.getHeight(), margin = Number(settings.margin || 0); const availableWidth = pageWidth - margin * 2, availableHeight = pageHeight - margin * 2;
+    for (let order = 0; order < pages.length; order += 1) {
+      const index = pages[order]; $('#saveState').textContent = `PDF ${order + 1}/${pages.length}`; await loadPage(index); canvas.discardActiveObject(); canvas.renderAll();
+      if (order) pdf.addPage(settings.format || 'letter', orientation);
+      const data = canvas.toDataURL({ format: 'png', multiplier }); const scale = Math.min(availableWidth / canvas.width, availableHeight / canvas.height), width = canvas.width * scale, height = canvas.height * scale, x = (pageWidth - width) / 2, y = (pageHeight - height) / 2;
+      pdf.addImage(data, 'PNG', x, y, width, height, undefined, 'FAST'); await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     const blob = pdf.output('blob'); await deliverBlob(blob, `${safeName(project.name)}.pdf`, share); toast(share ? 'Elige WhatsApp, Drive u otra aplicación.' : 'PDF guardado.');
   } catch { toast('No se pudo crear el PDF. Reduce las imágenes o exporta menos páginas.'); }
@@ -531,7 +606,7 @@ async function makePdf(share = false) {
 function safeName(name) { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'tarea'; }
 
 async function importEditable(file) {
-  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); saveAll(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; Object.entries(payload.fontLibrary || project.glyphs || {}).forEach(([character, variants]) => { (sharedGlyphs[character] ||= []).push(...variants); sharedGlyphs[character] = sharedGlyphs[character].slice(-30); }); (payload.templates || []).forEach((template) => { if (!pageTemplates.some((item) => item.type === template.type && item.name === template.name)) pageTemplates.push({ ...template, id: templateId() }); }); projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); renderTemplateControls(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); toast('Tarea, fuente y plantillas importadas.'); } catch { toast('El archivo .trazo no es válido.'); }
+  try { const payload = JSON.parse(await file.text()); if (payload.type !== 'trazo-project' || !payload.project) throw new Error(); saveAll(); const project = payload.project; project.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()); project.name = `${project.name} (importada)`; project.snapshots ||= []; project.exportSettings ||= { format: 'letter', margin: 0, range: '' }; Object.entries(payload.fontLibrary || project.glyphs || {}).forEach(([character, variants]) => { (sharedGlyphs[character] ||= []).push(...variants); sharedGlyphs[character] = sharedGlyphs[character].slice(-30); }); (payload.templates || []).forEach((template) => { if (!pageTemplates.some((item) => item.type === template.type && item.name === template.name)) pageTemplates.push({ ...template, id: templateId() }); }); projects.unshift(project); currentProjectId = project.id; pageIndex = 0; updateProjectSelect(); renderTemplateControls(); await loadPage(0, { saveBefore: false }); saveAll(); updateGlyphStatus(); toast('Tarea, fuente, versiones y plantillas importadas.'); } catch { toast('El archivo .trazo no es válido.'); }
 }
 
 function drawGlyphPad() {
@@ -542,7 +617,11 @@ function glyphPoint(event) { const rect = $('#glyphPad').getBoundingClientRect()
 function glyphPreview(variant) { const lines = variant.map((stroke) => `<polyline points="${stroke.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ')}" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>`).join(''); return `<svg viewBox="0 0 100 100" aria-hidden="true">${lines}</svg>`; }
 function glyphCharacter() { return [...$('#glyphCharacter').value].at(-1) || 'a'; }
 function variantStrokes(variant) { return Array.isArray(variant) ? variant : (variant?.strokes || []); }
-function updateGlyphStatus() { const character = glyphCharacter(); $('#glyphCharacter').value = character; const variants = sharedGlyphs[character] || []; const count = variants.length; $('#glyphCount').textContent = `${count}/10`; $('#glyphProgress').style.width = `${Math.min(100, count * 10)}%`; $('#glyphMessage').textContent = count >= 10 ? 'Lista y disponible en todas tus tareas.' : `Faltan ${10 - count} muestras recomendadas.`; $('#glyphVariants').innerHTML = variants.map((variant, index) => `<button class="glyph-variant" data-delete-variant="${index}" title="Eliminar variante ${index + 1}"><b>#${index + 1}</b>${glyphPreview(variantStrokes(variant))}<i>×</i></button>`).join(''); }
+function updateGlyphStatus() {
+  const character = glyphCharacter(); $('#glyphCharacter').value = character; const variants = sharedGlyphs[character] || []; const count = variants.length; $('#glyphCount').textContent = `${count}/10`; $('#glyphProgress').style.width = `${Math.min(100, count * 10)}%`; $('#glyphMessage').textContent = count >= 10 ? 'Lista y disponible en todas tus tareas.' : `Faltan ${10 - count} muestras recomendadas.`; $('#glyphVariants').innerHTML = variants.map((variant, index) => `<button class="glyph-variant" data-delete-variant="${index}" title="Eliminar variante ${index + 1}"><b>#${index + 1}</b>${glyphPreview(variantStrokes(variant))}<i>×</i></button>`).join('');
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789áéíóúüñÁÉÍÓÚÜÑ.,;:¿?¡!-'.split(''); const ready = alphabet.filter((item) => (sharedGlyphs[item]?.length || 0) >= 10).length; $('#fontCompletion').textContent = `${Math.round(ready / alphabet.length * 100)}% completo · ${ready}/${alphabet.length} caracteres`;
+  $('#fontChecklist').innerHTML = alphabet.map((item) => { const samples = sharedGlyphs[item]?.length || 0; const state = samples >= 10 ? 'ready' : samples ? 'partial' : 'missing'; return `<button class="font-char ${state}" data-font-char="${escapeHtml(item)}" title="${samples}/10 muestras">${escapeHtml(item)}</button>`; }).join('');
+}
 
 function saveGlyph() { if (!glyphDraft.some((stroke) => stroke.length > 1)) return toast('Dibuja la letra primero.'); const character = glyphCharacter(); (sharedGlyphs[character] ||= []).push({ strokes: glyphDraft, createdAt: Date.now() }); glyphDraft = []; drawGlyphPad(); updateGlyphStatus(); scheduleSave(false); }
 
@@ -591,7 +670,7 @@ function nextWritingTop() {
 
 async function addHumanizedText(value) {
   if (!value.trim()) return toast('Escribe algo primero.');
-  const lineHeight = paperLineHeight(), size = lineHeight * .76, left = pageLeftMargin(), maxWidth = canvas.width - left - 55, glyphs = sharedGlyphs, amount = Number($('#humanize').value) / 100;
+  const lineHeight = paperLineHeight(), size = lineHeight * .76, left = pageLeftMargin(), maxWidth = canvas.width - left - 55, glyphs = sharedGlyphs, amount = Number($('#humanize').value) / 100, flowId = objectId();
   let startTop = nextWritingTop(); if (startTop > canvas.height - lineHeight * 2 - 55) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); startTop = 64; }
   const pages = [[]]; let page = 0, row = 0, x = 0;
   const capacity = (pageNumber) => Math.max(1, Math.floor((canvas.height - (pageNumber ? 64 : startTop) - 55) / lineHeight));
@@ -607,28 +686,40 @@ async function addHumanizedText(value) {
   for (let index = 0; index < pages.length; index += 1) {
     if (index) { saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1; await loadPage(pageIndex, { saveBefore: false }); }
     if (!pages[index].length) continue;
-    const group = new fabric.Group(pages[index], { left, top: index ? 64 : startTop, trazoType: 'humanized-text', sourceText: value, humanizeAmount: amount }); canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll(); saveCurrentPage();
+    const group = new fabric.Group(pages[index], { left, top: index ? 64 : startTop, trazoType: 'humanized-text', sourceText: value, humanizeAmount: amount, textFlowId: flowId }); canvas.add(group); canvas.setActiveObject(group); canvas.requestRenderAll(); saveCurrentPage();
   }
-  scheduleSave(); toast(pages.length > 1 ? `Texto acomodado en ${pages.length} páginas.` : 'Texto alineado a los renglones y al margen.');
+  scheduleSave(); pendingHumanizedEdit = null; $('#addHandText').textContent = 'Colocar con mi letra'; $('#cancelHandEdit').hidden = true; toast(pages.length > 1 ? `Texto acomodado en ${pages.length} páginas.` : 'Texto alineado a los renglones y al margen.');
 }
 
-canvas.on('object:added', () => scheduleSave()); canvas.on('object:removed', () => scheduleSave()); canvas.on('object:modified', (event) => {
+function editSelectedHumanizedText() {
+  const object = selected(); if (!object || object.trazoType !== 'humanized-text') return toast('Selecciona un texto creado con tu letra.');
+  pendingHumanizedEdit = object; $('#handTextInput').value = object.sourceText || ''; $('#humanize').value = Math.round((object.humanizeAmount ?? .65) * 100); $('#addHandText').textContent = 'Guardar cambios'; $('#cancelHandEdit').hidden = false; switchTool('handtext'); toast('Edita el contenido y guarda los cambios.');
+}
+async function submitHumanizedText() {
+  const value = $('#handTextInput').value; if (pendingHumanizedEdit) { const flowId = pendingHumanizedEdit.textFlowId; canvas.remove(pendingHumanizedEdit); saveCurrentPage(); if (flowId) currentProject().pages.forEach((page) => { if (page?.objects) page.objects = page.objects.filter((object) => object.textFlowId !== flowId); }); pendingHumanizedEdit = null; }
+  await addHumanizedText(value);
+}
+function recognizeDrawnShape(path) {
+  if (!$('#shapeRecognition').checked || brushMode !== 'pencil') return path; const bounds = path.getBoundingRect(); const ratio = bounds.width / Math.max(1, bounds.height); const commands = path.path || [];
+  const first = commands[0]?.slice(-2) || [0, 0], last = commands.at(-1)?.slice(-2) || [0, 0]; const closeDistance = Math.hypot(last[0] - first[0], last[1] - first[1]); const diagonal = Math.hypot(bounds.width, bounds.height);
+  let replacement = null; if (ratio > 5 || ratio < .2) replacement = new fabric.Line(ratio > 5 ? [bounds.left, bounds.top + bounds.height / 2, bounds.left + bounds.width, bounds.top + bounds.height / 2] : [bounds.left + bounds.width / 2, bounds.top, bounds.left + bounds.width / 2, bounds.top + bounds.height], { stroke: path.stroke, strokeWidth: path.strokeWidth, strokeLineCap: 'round', trazoType: 'drawing', layerName: 'Línea recta' });
+  else if (commands.length > 8 && closeDistance < diagonal * .28 && ratio > .62 && ratio < 1.62) replacement = new fabric.Ellipse({ left: bounds.left, top: bounds.top, rx: bounds.width / 2, ry: bounds.height / 2, fill: 'transparent', stroke: path.stroke, strokeWidth: path.strokeWidth, trazoType: 'drawing', layerName: 'Forma reconocida' });
+  if (!replacement) return path; canvas.remove(path); ensureObjectMetadata(replacement); canvas.add(replacement); canvas.setActiveObject(replacement); canvas.requestRenderAll(); toast('Trazo convertido en una forma limpia.'); return replacement;
+}
+
+canvas.on('object:added', (event) => { ensureObjectMetadata(event.target); renderLayers(); scheduleSave(); }); canvas.on('object:removed', () => { renderLayers(); scheduleSave(); }); canvas.on('object:moving', refreshConnectors); canvas.on('object:scaling', refreshConnectors); canvas.on('object:rotating', refreshConnectors); canvas.on('object:modified', (event) => {
   const object = event.target; if (!object || object.trazoType === 'page-guide' || movingOverflowObject) return scheduleSave();
   const alignable = ['humanized-text','hand-text','text','annotation'].includes(object.trazoType); if (alignable) fitObjectInsidePage(object);
   const bounds = object.getBoundingRect();
   if (bounds.top + bounds.height > canvas.height + 20) {
     movingOverflowObject = true; canvas.remove(object); saveCurrentPage(); currentProject().pages.push(null); pageIndex = currentProject().pages.length - 1;
     void loadPage(pageIndex, { saveBefore: false }).then(() => { object.set({ top: 64, left: pageLeftMargin() }); fitObjectInsidePage(object); canvas.add(object); canvas.setActiveObject(object); canvas.requestRenderAll(); saveCurrentPage(); toast('El elemento pasó a una sola página nueva.'); }).catch(() => toast('No se pudo mover el elemento a otra página.')).finally(() => { movingOverflowObject = false; });
-  } else scheduleSave();
+  } else { refreshConnectors(); renderLayers(); scheduleSave(); }
 });
-canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: 'drawing' }); canvas.freeDrawingBrush.width = baseBrushWidth; scheduleSave(); });
-canvas.on('mouse:down', (event) => {
-  if (activeTool !== 'erase' || !event.target) return;
-  if (event.target.trazoType === 'drawing') { canvas.remove(event.target); canvas.discardActiveObject(); canvas.requestRenderAll(); scheduleSave(); toast('Trazo borrado.'); }
-  else toast('El borrador de trazo sólo elimina dibujos.');
-});
-canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection);
-function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') syncColorControls(object.fill); $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; }
+canvas.on('path:created', (event) => { if (pinchState || performance.now() < pinchDiscardUntil) { canvas.remove(event.path); canvas.requestRenderAll(); return; } event.path.set({ trazoType: brushMode === 'eraser' ? 'eraser-mark' : 'drawing', layerName: brushMode === 'eraser' ? 'Borrado parcial' : 'Dibujo' }); ensureObjectMetadata(event.path); if (brushMode !== 'eraser') recognizeDrawnShape(event.path); canvas.freeDrawingBrush.width = baseBrushWidth; renderLayers(); scheduleSave(); });
+canvas.on('mouse:dblclick', (event) => { if (event.target?.trazoType === 'humanized-text') { canvas.setActiveObject(event.target); editSelectedHumanizedText(); } });
+canvas.on('selection:created', syncSelection); canvas.on('selection:updated', syncSelection); canvas.on('selection:cleared', renderLayers);
+function syncSelection() { const object = selected(); if (object?.fill && typeof object.fill === 'string') syncColorControls(object.fill); $('#lockObject').textContent = object?.locked ? 'Desbloquear' : 'Bloquear'; renderLayers(); }
 
 $$('.toolrail button').forEach((button) => button.onclick = () => switchTool(button.dataset.tool));
 $('#panelClose').onclick = () => $('#panel').classList.remove('open');
@@ -644,28 +735,39 @@ $('#colorHex').oninput = (event) => { if (normalizeHex(event.target.value)) appl
 ['colorHue','colorSaturation','colorLightness'].forEach((id) => { $(`#${id}`).oninput = () => applyObjectColor(hslToHex($('#colorHue').value, $('#colorSaturation').value, $('#colorLightness').value)); $(`#${id}`).onchange = () => rememberColor($('#objectColor').value); });
 function chooseSwatch(event) { const button = event.target.closest('[data-color]'); if (!button) return; applyObjectColor(button.dataset.color); rememberColor(button.dataset.color); }
 $('#colorPresets').onclick = chooseSwatch; $('#recentColors').onclick = chooseSwatch;
-$('#brushWidth').oninput = (event) => { baseBrushWidth = Number(event.target.value); canvas.freeDrawingBrush.width = baseBrushWidth; $('#brushOut').textContent = event.target.value; };
+$('#brushWidth').oninput = (event) => { baseBrushWidth = brushMode === 'eraser' ? Math.max(18, Number(event.target.value) * 3) : brushMode === 'highlighter' ? Math.max(14, Number(event.target.value)) : Number(event.target.value); canvas.freeDrawingBrush.width = baseBrushWidth; $('#brushOut').textContent = event.target.value; };
 $('#undo').onclick = () => restoreHistory(historyIndex - 1); $('#redo').onclick = () => restoreHistory(historyIndex + 1);
 $('#removeObject').onclick = () => { const object = selected(); if (object) canvas.remove(object); };
 $('#duplicateObject').onclick = async () => { const object = selected(); if (!object) return; const clone = await object.clone(extraProps); clone.set({ left: object.left + 24, top: object.top + 24 }); addObject(clone, false); };
 $('#lockObject').onclick = () => { const object = selected(); if (!object) return; unlockState(object, !object.locked); canvas.discardActiveObject(); canvas.requestRenderAll(); scheduleSave(); };
 $('#frontObject').onclick = () => { const object = selected(); if (object) { canvas.bringObjectToFront(object); scheduleSave(); } };
 $('#backObject').onclick = () => { const object = selected(); if (object) { canvas.sendObjectToBack(object); addMarginGuide(currentProject().paperStyle); scheduleSave(); } };
-$('#addText').onclick = () => { void addText($('#textInput').value); }; $('#addHandText').onclick = () => { void addHumanizedText($('#handTextInput').value); };
+$('#lassoMode').onclick = () => { switchTool('select'); canvas.selection = true; canvas.skipTargetFind = false; canvas.discardActiveObject(); canvas.requestRenderAll(); toast('Arrastra alrededor de los objetos que quieras seleccionar.'); };
+$('#editHumanized').onclick = editSelectedHumanizedText;
+$('#addText').onclick = () => { void addText($('#textInput').value); }; $('#addHandText').onclick = () => { void submitHumanizedText(); };
+$('#cancelHandEdit').onclick = () => { pendingHumanizedEdit = null; $('#addHandText').textContent = 'Colocar con mi letra'; $('#cancelHandEdit').hidden = true; toast('Edición cancelada.'); };
 $('#addNote').onclick = addAnnotation;
-$('#pencilMode').onclick = () => setDrawingMode('pencil'); $('#highlighterMode').onclick = () => setDrawingMode('highlighter'); $('#eraserMode').onclick = () => { activeTool = 'erase'; brushMode = 'eraser'; syncInteractionMode(); $('#pencilMode').classList.remove('active'); $('#highlighterMode').classList.remove('active'); $('#eraserMode').classList.add('active'); toast('Toca un trazo para borrarlo.'); }; $('#finishDrawing').onclick = () => switchTool('select');
+$('#pencilMode').onclick = () => setDrawingMode('pencil'); $('#highlighterMode').onclick = () => setDrawingMode('highlighter'); $('#eraserMode').onclick = () => { setDrawingMode('eraser'); toast('Pasa sobre la parte del dibujo que quieras borrar.'); }; $('#finishDrawing').onclick = () => switchTool('select');
 $('#symbolTabs').onclick = (event) => { const button = event.target.closest('[data-category]'); if (button) { activeSymbolCategory = button.dataset.category; renderSymbols(); } };
 $('#symbolGrid').onclick = (event) => { const button = event.target.closest('[data-symbol]'); if (button) insertSymbol(button.dataset.symbol); };
 $$('[data-diagram]').forEach((button) => button.onclick = () => insertDiagram(button.dataset.diagram));
+$('#connectSelection').onclick = connectSelection;
 $('#symbolSearch').oninput = renderSymbols; $('#chooseImage').onclick = () => $('#imageFile').click(); $('#imageFile').onchange = (event) => { if (event.target.files[0]) readImage(event.target.files[0]); event.target.value = ''; };
 $('#cropImageSquare').onclick = () => cropSelectedImage(true); $('#restoreImageCrop').onclick = () => cropSelectedImage(false);
 $('#makeCover').onclick = applyCover; $('#saveCoverTemplate').onclick = saveCoverTemplate; $('#loadCoverTemplate').onclick = loadCoverTemplate; $('#deleteCoverTemplate').onclick = () => deleteTemplate('cover', '#coverTemplateSelect');
 $('#applyPageStyle').onclick = () => { void resizePages($('#orientation').value, $('#paperStyle').value); };
 $('#savePageTemplate').onclick = savePageTemplate; $('#insertPageTemplate').onclick = () => { void insertPageTemplate(); }; $('#deletePageTemplate').onclick = () => deleteTemplate('page', '#pageTemplateSelect');
+['pdfFormat','pdfMargin','pdfRange'].forEach((id) => { $(`#${id}`).onchange = () => { const settings = currentProject().exportSettings ||= {}; settings.format = $('#pdfFormat').value; settings.margin = Number($('#pdfMargin').value); settings.range = $('#pdfRange').value.trim(); scheduleSave(false); }; });
+$('#pageThumbnails').onclick = (event) => { const button = event.target.closest('[data-page-index]'); if (button) void loadPage(Number(button.dataset.pageIndex)); };
 $('#rotateView').onclick = rotateView;
-$('#prevPage').onclick = () => { void loadPage(pageIndex - 1); }; $('#nextPage').onclick = () => { void loadPage(pageIndex + 1); }; $('#addPage').onclick = () => { void addPage(); }; $('#duplicatePage').onclick = () => { void duplicatePage(); }; $('#movePageLeft').onclick = () => { void movePage(-1); }; $('#movePageRight').onclick = () => { void movePage(1); }; $('#deletePage').onclick = async () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); await loadPage(pageIndex, { saveBefore: false }); scheduleSave(false); };
+$('#prevPage').onclick = () => { void loadPage(pageIndex - 1); }; $('#nextPage').onclick = () => { void loadPage(pageIndex + 1); }; $('#addPage').onclick = () => { void addPage(); }; $('#duplicatePage').onclick = () => { void duplicatePage(); }; $('#movePageLeft').onclick = () => { void movePage(-1); }; $('#movePageRight').onclick = () => { void movePage(1); }; $('#deletePage').onclick = async () => { if (currentProject().pages.length === 1) return toast('Debe quedar una página.'); if (!confirm('¿Eliminar esta página?')) return; currentProject().pages.splice(pageIndex, 1); pageIndex = Math.min(pageIndex, currentProject().pages.length - 1); await loadPage(pageIndex, { saveBefore: false }); void renderPageThumbnails(); scheduleSave(false); };
 $('#zoomIn').onclick = () => { zoom = Math.min(MAX_ZOOM, zoom + (zoom >= 1 ? .2 : .1)); applyZoom(); }; $('#zoomOut').onclick = () => { zoom = Math.max(MIN_ZOOM, zoom - (zoom > 1 ? .2 : .1)); applyZoom(); };
 $('#exportProject').onclick = () => { void exportEditable(); }; $('#importProject').onclick = () => $('#projectFile').click(); $('#projectFile').onchange = (event) => { if (event.target.files[0]) void importEditable(event.target.files[0]); event.target.value = ''; }; $('#exportPdf').onclick = () => { void makePdf(false); }; $('#sharePdf').onclick = () => { void makePdf(true); };
+$('#snapshotSave').onclick = saveSnapshot; $('#snapshotRestore').onclick = () => { void restoreSnapshot(); }; $('#snapshotDelete').onclick = deleteSnapshot;
+$('#layerList').onclick = (event) => { const action = event.target.closest('[data-layer-action]'); const row = event.target.closest('[data-layer-id]'); if (!action || !row) return; const object = canvas.getObjects().find((item) => item.objectId === row.dataset.layerId); if (!object) return; if (action.dataset.layerAction === 'visibility') { object.visible = object.visible === false; if (!object.visible) canvas.discardActiveObject(); } else if (action.dataset.layerAction === 'select') { object.visible = true; canvas.setActiveObject(object); } else if (action.dataset.layerAction === 'up') canvas.bringObjectForward(object); else if (action.dataset.layerAction === 'down') canvas.sendObjectBackwards(object); addMarginGuide(currentProject().paperStyle); canvas.requestRenderAll(); renderLayers(); scheduleSave(); };
+$('#fontChecklist').onclick = (event) => { const button = event.target.closest('[data-font-char]'); if (!button) return; $('#glyphCharacter').value = button.dataset.fontChar; updateGlyphStatus(); $('#glyphPad').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+function setReadingMode(enabled) { document.body.classList.toggle('reading', enabled); $('#exitReading').hidden = !enabled; if (enabled) { canvas.discardActiveObject(); canvas.selection = false; canvas.skipTargetFind = true; zoom = window.innerWidth < 900 ? .62 : .78; } else { canvas.skipTargetFind = false; syncInteractionMode(); } applyZoom(); canvas.requestRenderAll(); }
+$('#readingMode').onclick = () => setReadingMode(true); $('#exitReading').onclick = () => setReadingMode(false);
 const glyphPad = $('#glyphPad'); glyphPad.onpointerdown = (event) => { glyphDrawing = true; glyphPad.setPointerCapture(event.pointerId); glyphDraft.push([glyphPoint(event)]); drawGlyphPad(); }; glyphPad.onpointermove = (event) => { if (glyphDrawing) { glyphDraft.at(-1).push(glyphPoint(event)); drawGlyphPad(); } }; glyphPad.onpointerup = () => glyphDrawing = false; glyphPad.onpointercancel = () => glyphDrawing = false; $('#glyphUndo').onclick = () => { glyphDraft.pop(); drawGlyphPad(); }; $('#glyphClear').onclick = () => { glyphDraft = []; drawGlyphPad(); }; $('#glyphSave').onclick = saveGlyph; $('#glyphCharacter').oninput = updateGlyphStatus; $('#glyphVariants').onclick = (event) => { const button = event.target.closest('[data-delete-variant]'); if (!button) return; const character = glyphCharacter(); sharedGlyphs[character].splice(Number(button.dataset.deleteVariant), 1); updateGlyphStatus(); scheduleSave(false); toast('Variante eliminada.'); };
 window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('#colorOverlay').hidden) closeColorPicker(false); if ((event.ctrlKey || event.metaKey) && event.key === 'z') { event.preventDefault(); void restoreHistory(event.shiftKey ? historyIndex + 1 : historyIndex - 1); } if ((event.key === 'Delete' || event.key === 'Backspace') && document.activeElement.tagName === 'BODY') { const object = selected(); if (object && !object.locked) canvas.remove(object); } });
 window.addEventListener('resize', () => { if (window.innerWidth < 600) zoom = .43; else if (window.innerWidth < 900) zoom = .62; applyZoom(); });
